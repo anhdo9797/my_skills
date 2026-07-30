@@ -1068,7 +1068,7 @@ main() {
   apply_cli_overrides
   validate_release_metadata
 
-  PUBLISHED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  PUBLISHED_AT="$(TZ='Asia/Ho_Chi_Minh' date '+%H:%M %d/%m/%Y')"
   log_info "Resolving ${#FEATURE_TEXTS[@]} feature(s) and ${#BUG_TEXTS[@]} bug(s)."
   resolve_all_items
 
