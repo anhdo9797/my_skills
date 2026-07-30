@@ -1,0 +1,4 @@
+interface:
+  display_name: "Distribute"
+  short_description: "Set up Fastlane release notifications"
+  default_prompt: "Use $distribute to add reusable Notion and Discord release notifications to this project."
