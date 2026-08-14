@@ -1,0 +1,80 @@
+{
+  "skill_name": "maestro-dev-testing",
+  "evals": [
+    {
+      "id": 0,
+      "name": "flow-investigation-edit-ingredient",
+      "prompt": "Viết UI test Maestro cho chức năng chỉnh sửa lượng (amount/quantity) của một nguyên liệu trong màn chi tiết recipe của app meal-planner. Lập plan trước rồi viết flow, và hướng dẫn tôi chạy.",
+      "expected_output": "Plan-first. The agent investigates the navigation path instead of guessing: reuses flows/common/open_recipes_tab.yaml (or otherwise sources the path to the recipe list/detail), and reads the recipe detail Compose source to find real selectors. Critically, if no ingredient amount/edit control exists in the source, it surfaces that the feature may not be built yet and asks the user / marks unverified selectors as TODO — it does NOT fabricate an 'edit amount' selector as if verified.",
+      "files": [],
+      "assertions": [
+        "Presents a TESTCASES.md plan before writing any flow YAML",
+        "Sources the navigation path from existing flows (reuses open_recipes_tab.yaml via runFlow) or another real subflow, not invented steps",
+        "Reads or cites the recipe detail Compose source / existing .maestro flows to derive selectors rather than inventing testTags",
+        "Does NOT fabricate a verified 'edit ingredient amount' selector: either marks it TODO/verify, asks the user, or reports the feature/control may not exist",
+        "Any new flow uses appId: ${APP_ID} and is placed under .maestro/flows/features/<feature>/ matching repo convention",
+        "Provides the exact maestro run command and notes the run is pending if no device"
+      ]
+    },
+    {
+      "id": 1,
+      "name": "document-driven-plan",
+      "prompt": "Đây là yêu cầu tính năng Onboarding cần test:\n- Lần đầu mở app hiển thị các màn onboarding, mỗi màn có nút Next.\n- Màn cuối có nút Get Started; bấm vào sẽ vào Home.\n- Mở lại app lần 2 thì bỏ qua onboarding và vào thẳng Home.\nHãy lập test plan cho tính năng này theo đúng yêu cầu trên, rồi viết flow Maestro.",
+      "expected_output": "A TESTCASES.md derived from the stated acceptance criteria (each scenario traceable to a bullet), covering the first-run happy path (clear cache) and the second-launch skip (warm cache, clear→warm dependency noted). Then Maestro flows reusing launch_clear_state / launch_keep_state, asserting on real outcomes, presented for confirmation before/with the YAML.",
+      "files": [],
+      "assertions": [
+        "Plan scenarios are traceable to the document's stated behaviors (first-run onboarding, Get Started -> Home, second-launch skip)",
+        "Distinguishes clear-cache (first run) from with-cache/warm (second-launch skip) and notes the clear->warm dependency",
+        "Writes the plan to a TESTCASES.md file under .maestro, not only in chat, before/with authoring",
+        "Flows reuse shared launch subflows (launch_clear_state.yaml / launch_keep_state.yaml) via runFlow instead of duplicating launchApp",
+        "Each flow ends on an assertion proving the expected result (e.g. Home visible / onboarding not shown)"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "favorite-recipe-regression",
+      "prompt": "Viết UI test tự động cho tính năng favorite recipe của app meal-planner (nút trái tim trên item recipe, và màn Favorites). Lập plan test trước, rồi viết flow Maestro, sau đó chạy và báo case nào pass/fail.",
+      "expected_output": "A test plan with several scenarios presented before code; one Maestro YAML flow per scenario under .maestro/flows/features/<feature>/ following existing conventions; flows end on assertions; an honest PASS/FAIL run report (or 'no device' message).",
+      "files": [],
+      "assertions": [
+        "Presents a structured test plan BEFORE writing flow YAML",
+        "Plan covers >=3 distinct scenarios (e.g. favorite, unfavorite/persist, empty state)",
+        "Each flow has valid Maestro frontmatter with the '---' separator and appId: ${APP_ID}",
+        "Flows placed under flows/features/<feature>/ and reuse shared launch via runFlow",
+        "Every flow ends with at least one assertion (assertVisible/assertNotVisible/assertTrue)",
+        "Run outcome reported honestly (real PASS/FAIL or honest no-device); no fabricated passes"
+      ]
+    },
+    {
+      "id": 3,
+      "name": "vision-ui-heuristic-scan",
+      "prompt": "Kiểm tra giao diện màn Home và màn chi tiết cây của app xem có lỗi hiển thị không (tràn chữ, đè element, lệch layout, ảnh không load). Không có Figma, cứ soi trực tiếp từng màn hình rồi báo màn nào lỗi.",
+      "expected_output": "Plan-first with VIS-* cases. For each screen the agent drives Maestro to it, takes a screenshot, overlays a labeled grid via scripts/grid_overlay.py, reads the GRIDDED image and scans cell-by-cell against the heuristic checklist (overflow, overlap, alignment, clipping, contrast, missing element). Findings name the grid cell(s) and are classified Critical vs Minor; verdict maps any Critical -> FAIL, only Minor -> NEEDS_REVIEW, clean -> PASS. No Figma is required. Honest no-device handling if no emulator.",
+      "files": [],
+      "assertions": [
+        "Presents VIS-* testcases in the plan before authoring flows",
+        "Uses scripts/grid_overlay.py to overlay a labeled grid on each screenshot",
+        "Scans the gridded screenshot cell-by-cell and references grid cell addresses (e.g. C4) in findings",
+        "Runs a heuristic (no-Figma) checklist: overflow/truncation, overlap, alignment, clipping, contrast, missing element",
+        "Classifies findings Critical vs Minor and maps to verdict (Critical -> FAIL, only Minor -> NEEDS_REVIEW, clean -> PASS)",
+        "Does not claim exact fontSize/dp measurements from the screenshot; keeps those as estimates/NEEDS_REVIEW",
+        "Reads only the gridded screenshot (not raw + gridded) per screen state; run outcome reported honestly"
+      ]
+    },
+    {
+      "id": 4,
+      "name": "vision-figma-parity",
+      "prompt": "Màn Paywall vừa code xong, so với thiết kế Figma này https://www.figma.com/design/abc/PlantID?node-id=1200-4567 xem có khớp không. Chụp màn hình thật rồi đối chiếu, chỗ nào lệch thì chỉ ra vị trí cụ thể.",
+      "expected_output": "The agent collects the Figma baseline (get_design_context / get_screenshot for the node), drives Maestro to the Paywall, screenshots it, grids it with grid_overlay.py, and compares the gridded device screenshot to the Figma render region-by-region (presence, text, relative layout, emphasis) — not pixel-exact. Deltas are reported with grid cell addresses and the Figma node id retained for traceability. Critical mismatches -> FAIL, minor -> NEEDS_REVIEW. If the Figma URL lacks node-id it asks for the node-specific URL.",
+      "files": [],
+      "assertions": [
+        "Collects a Figma baseline for the given node (design context and/or screenshot render) before comparing",
+        "Overlays a grid on the device screenshot via grid_overlay.py and compares to the Figma render region-by-region",
+        "Reports deltas with grid cell addresses and keeps the Figma node id for traceability",
+        "Compares relative layout/presence/text/emphasis, explicitly NOT pixel-exact position, acknowledging density/system-chrome differences",
+        "Maps Critical mismatches -> FAIL and minor/subjective ones -> NEEDS_REVIEW",
+        "Run outcome reported honestly (real result or honest no-device/missing-node handling)"
+      ]
+    }
+  ]
+}

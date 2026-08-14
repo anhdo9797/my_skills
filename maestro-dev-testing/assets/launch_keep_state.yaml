@@ -1,0 +1,7 @@
+appId: ${APP_ID}
+name: Launch app keeping cached state
+---
+# Warm launch: do NOT clear state, so cached data, session, and the
+# onboarding-completed flag from a previous run survive. Pair with
+# launch_clear_state.yaml (run that first) to test persistence / with-cache flows.
+- launchApp

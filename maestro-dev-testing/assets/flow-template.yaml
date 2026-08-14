@@ -1,0 +1,16 @@
+appId: ${APP_ID}
+name: <Scenario name — matches the TC in the test plan>
+tags:
+  - <feature>
+  # - smoke   # add for P0 happy-path journeys
+---
+# Reuse shared setup instead of repeating launch steps.
+- runFlow: ../../common/launch_clear_state.yaml
+
+# Steps in the order a user performs them. Prefer id selectors over text.
+# - tapOn: { id: "<test_tag>" }
+# - tapOn: "<Visible text>"
+# - inputText: "<value>"
+
+# End on the assertion that proves the scenario's expected result.
+- assertVisible: "<Expected on-screen result>"
