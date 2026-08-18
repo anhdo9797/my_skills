@@ -1,17 +1,26 @@
-# UI Validation: Figma → Durable, Agent-Free Checks
+# UI Validation: Three Tiers of Visual Check
 
-The goal of UI validation is to verify that the app screen matches the Figma design. The naive way — have the Agent eyeball Figma vs. a screenshot on every run — works, but it puts the Agent in the regression loop forever: slow, token-heavy, and impossible to run headless in CI.
+The goal of UI validation is to verify that the app screen looks the way it should — matching the Figma design where one exists, and free of layout defects either way.
 
-So this skill is built the other way around: **the Agent's vision is an authoring tool, not a runtime dependency.** The Agent looks at the design *once*, while writing the test, and turns it into checks that Maestro (and a tiny diff script) can run forever without any Agent involved.
+The naive way — have the Agent eyeball Figma vs. a screenshot on every run — works, but it puts the Agent in the regression loop forever: slow, token-heavy, impossible to run headless in CI. So the durable checks are built the other way around: **the Agent's vision is an authoring tool, not a runtime dependency.** It looks at the design *once*, while writing the test, and turns it into checks that Maestro (and a tiny diff script) can run forever without any Agent.
 
-Two tiers of durable check come out of that authoring pass:
+But some things genuinely need eyes — a clipped title, two overlapping labels, a first-ever run with no baseline to diff against. That's a separate, deliberately on-demand tier. Three tiers total:
 
-| Tier | What it checks | Mechanism | Agent at regression time? |
-|------|----------------|-----------|---------------------------|
-| **1 — Assertions** (always) | Specific, nameable facts from the design: static labels, button text, key elements present/absent, counts, states | Maestro `assertVisible` / `assertNotVisible` / property assertions baked into the TC YAML | **No** — pure Maestro |
-| **2 — Visual baseline diff** (optional) | Layout / color / spacing drift that assertions can't name | `scripts/compare_screenshots.py` compares the fresh screenshot against an approved baseline, with dynamic regions masked | **No** — deterministic script |
+| Tier | What it checks | Mechanism | Needs the Agent? |
+|------|----------------|-----------|------------------|
+| **1 — Assertions** (always) | Specific, nameable facts from the design: static labels, button text, key elements present/absent, counts, states | Maestro `assertVisible` / `assertNotVisible` / property assertions baked into the TC YAML | **No** — pure Maestro, CI-safe |
+| **2 — Baseline diff** (optional) | Layout / color / spacing *drift* from an approved capture, which assertions can't name | `scripts/compare_screenshots.py` diffs the fresh screenshot against the baseline, with dynamic regions masked | **No** — deterministic script, CI-safe |
+| **3 — Visual review** (on demand) | How the screen *looks*: overlap, truncation, clipping, misalignment, wrong state — defects with no baseline and no name | `scripts/grid_overlay.py` + the Agent scanning the gridded screenshot cell by cell → severity → verdict | **Yes** — that's the point; see `visual-review.md` |
 
-The Agent only re-enters when the **design changes** or the **baseline must be re-approved** — i.e. when authoring, not when running. Maestro itself has no native "compare to Figma" or pixel-diff command, which is exactly why this split exists.
+Tiers 1 and 2 are the regression contract: they run every time, forever, unattended. Tier 3 is the pass that *creates* that contract and catches what it can't express. The Agent re-enters only when the design changes, a baseline must be re-approved, or the tester explicitly asks for a visual QA pass — not on every run.
+
+**Which tier for the request in front of you:**
+
+- *"Verify the Edit Recipe screen matches Figma, and keep checking it every release"* → Tier 1 (+ Tier 2 if drift matters), authored with a Tier 3 pass to get it right once.
+- *"Kiểm tra giao diện từng màn hình xem có lỗi hiển thị không"* / *"test UI bằng ảnh chụp"* / no design provided → **Tier 3**, heuristic mode. There's nothing to assert against yet; the screenshot is the test.
+- *"Tier 2 says 3% drift — is that a bug?"* → **Tier 3** on the same capture to say *what* changed and whether it matters.
+
+Maestro itself has no native "compare to Figma" or pixel-diff command, which is exactly why this split exists.
 
 ---
 
@@ -127,6 +136,24 @@ The script prints a JSON summary and exits `0` (within threshold → PASS) or `1
 
 Tuning: `--tolerance` is the per-channel intensity delta below which a pixel counts as unchanged (default 24, absorbs anti-aliasing); `--threshold` is the allowed changed-pixel ratio (default 0.01 = 1%). If a run fails only because of a newly-dynamic region, add a mask to the sidecar rather than loosening the threshold.
 
+## Tier 3 — Visual review from the screenshot (on demand)
+
+Tiers 1 and 2 both need something to compare against: a named fact, or an approved baseline. Tier 3 needs neither — the Agent reads the screenshot and judges the layout directly, which is the only way to catch a clipped title or two overlapping labels on a screen nobody has baselined yet.
+
+To keep that judgment systematic rather than one impressionistic glance, `scripts/grid_overlay.py` stamps a labeled grid over the screenshot first; the review then walks it cell by cell and every finding carries an address (`C3`, `A6:F8`) a reviewer can find again. Findings are classified **Critical** (a user would notice and be blocked — overlap, clipping, off-screen content, missing element) or **Minor** (subjective polish), and the severity decides the verdict: any Critical → ❌ FAIL, only Minor → 🔍 REVIEW, clean → ✅ PASS. The deliverable is an annotated image with the defective cells washed red.
+
+```bash
+python3 scripts/grid_overlay.py report/screenshots/TC-010_default.png \
+    --cols 6 --rows 13 --out report/grid/TC-010_default-grid.png
+# …scan the gridded image cell by cell, then mark only the cells with visible evidence:
+python3 scripts/grid_overlay.py report/screenshots/TC-010_default.png \
+    --cols 6 --rows 13 --highlight "E2:F3" --out report/vision/TC-010_default-report.png
+```
+
+**Read `visual-review.md` before running a Tier 3 pass.** The full method is there, and so are the two judgment calls that decide whether the result is trustworthy: what vision can and cannot prove (it estimates, it does not measure — never claim a `dp`/`sp` value from a screenshot), and the **data-state vs. design-state** rule that stops the most common false FAIL (the app showing three items where the design shows six is *data*, not a defect).
+
+A clean Tier 3 pass is also the natural moment to **promote the screenshot to a Tier 2 baseline** — vision just confirmed it's correct, so it's a baseline you can trust. That's the intended graduation: Tier 3 finds and confirms; Tiers 1 and 2 lock it in for every future run.
+
 ---
 
 ## Procedure summary
@@ -134,21 +161,25 @@ Tuning: `--tolerance` is the per-channel intensity delta below which a pixel cou
 **At authoring time (Agent in the loop, once per TC):**
 1. Name the **subject under test** — the region this TC is about; focus there.
 2. Mask the chrome bands; classify content-area elements static vs. dynamic.
-3. **Tier 1:** turn every static fact into an `assertVisible`/`assertNotVisible`/property assertion in the YAML.
-4. **Tier 2 (if requested):** approve the baseline screenshot and record its masks sidecar.
+3. **Tier 3 pass:** grid the capture and scan it cell by cell — this is what tells you the screen is actually correct before you encode anything, and it catches layout defects no assertion would name.
+4. **Tier 1:** turn every static fact into an `assertVisible`/`assertNotVisible`/property assertion in the YAML.
+5. **Tier 2 (if requested):** promote the vision-approved screenshot to the baseline and record its masks sidecar.
 
 **At regression time (no Agent):**
 - Maestro runs the flow → Tier 1 assertions pass/fail deterministically.
 - `compare_screenshots.py` runs → Tier 2 pass/fail deterministically.
 - The TC's status is PASS only if both tiers pass. A Tier 2 failure links the heatmap as evidence.
 
+**On demand (Agent, when asked or when Tier 2 drift needs explaining):** Tier 3 as above.
+
 ## Mapping verdict → TC status
 
-- All Tier 1 assertions pass (and Tier 2 within threshold, if used) → **PASS**
-- A cosmetic-only Tier 2 drift the user accepts → **PASS** with a note (and update the baseline)
-- A failed Tier 1 assertion, or Tier 2 drift over threshold on a static region → **FAIL**
+- All Tier 1 assertions pass (and Tier 2 within threshold, if used; Tier 3 clean, if run) → **✅ PASS**
+- A cosmetic-only Tier 2 drift the user accepts → **✅ PASS** with a note (and update the baseline)
+- A failed Tier 1 assertion, Tier 2 drift over threshold on a static region, or a **Critical** Tier 3 finding → **❌ FAIL**
+- Only **Minor** Tier 3 findings, or exact typography/spacing parity that vision can't measure → **🔍 REVIEW** (evidence captured, a human decides)
 
-When you report a FAIL, state the reasoning so a developer can trust it — name the element, say why it's static (not chrome or API content), and quote design vs. actual. Evidence links the Figma design, the app capture, and (Tier 2) the diff heatmap.
+When you report a FAIL, state the reasoning so a developer can trust it — name the element, say why it's static (not chrome or API content), and quote design vs. actual. For a Tier 3 FAIL, name the cell(s). Evidence links the Figma design, the app capture, and whichever artifact proved it: the Tier 2 heatmap or the Tier 3 annotated image.
 
 ## When in doubt
 

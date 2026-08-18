@@ -51,12 +51,12 @@ Establishes Notion as a structured task management source while enabling seamles
 * **Detailed Documentation:** [`maestro-test-executor/DOC.md`](maestro-test-executor/DOC.md)
 
 **Description:**
-Automates mobile QA testing by converting test plans into executable [Maestro](https://maestro.mobile.dev/) YAML flows. Designed for non-technical testers without requiring source code reading. Runs flows incrementally, inspects live screen hierarchies efficiently, optionally compares UI screenshots against Figma baselines, and generates consolidated markdown test reports.
+Automates mobile QA testing by converting test plans into executable [Maestro](https://maestro.mobile.dev/) YAML flows. Designed for non-technical testers without requiring source code reading. Runs flows incrementally, inspects live screen hierarchies efficiently, validates how each screen looks — against a Figma design or from the screenshot alone — and generates consolidated markdown test reports.
 
 **Key Features:**
 * Direct translation of manual QA test cases into Maestro `.yaml` flows.
 * Context-efficient screen inspection using [`scripts/filter_hierarchy.py`](maestro-test-executor/scripts/filter_hierarchy.py).
-* Visual UI verification and image diffing via [`scripts/compare_screenshots.py`](maestro-test-executor/scripts/compare_screenshots.py).
+* Three-tier UI validation: Maestro assertions and pixel-diff baselines run unattended in CI ([`scripts/compare_screenshots.py`](maestro-test-executor/scripts/compare_screenshots.py)), while an on-demand **visual review** grids the screenshot ([`scripts/grid_overlay.py`](maestro-test-executor/scripts/grid_overlay.py)) and scans it cell-by-cell for clipping, overlap, and misalignment — auto-failing on serious defects and returning an annotated image that marks exactly which cells are wrong.
 * Living `report.md` resume/upsert mechanism across multi-session test executions.
 
 ---

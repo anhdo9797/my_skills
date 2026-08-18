@@ -21,9 +21,11 @@ Everything about writing, organizing, running, and debugging Maestro flows. Read
     └── report/             ← execution artifacts
         ├── report.md       ← THE one living report, updated in place every session (never re-timestamped)
         ├── screenshots/    ← takeScreenshot output (actual app captures)
-        ├── figma/          ← Figma design exports (UI validation authoring)
+        ├── figma/          ← design references: Figma renders or tester-supplied exports
         ├── baseline/       ← approved Tier 2 baselines + <TC>.masks.json sidecars
         ├── diff/           ← compare_screenshots.py heatmaps (on Tier 2 failure)
+        ├── grid/           ← grid_overlay.py output — what Tier 3 vision actually reads
+        ├── vision/         ← Tier 3 annotated results, defect cells washed red (the deliverable)
         └── <timestamp>/    ← maestro --test-output-dir logs + failure screenshots (one per run, accumulate)
 ```
 

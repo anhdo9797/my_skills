@@ -26,8 +26,11 @@ A plan is often too large for one sitting (e.g. 60 cases across P0→P4). The te
 | ⬜ PENDING | Planned, not run yet (seeded but untouched) |
 | ✅ PASS | Ran and passed |
 | ❌ FAIL | Ran and failed (has a Failed Test Details entry) |
+| 🔍 REVIEW | Ran; evidence captured, but the verdict needs a human — only **Minor** Tier 3 visual findings, or exact typography/spacing parity vision can't measure. Not a pass, not a failure. |
 | ⏭️ SKIP | Not automatable (manual/hardware/performance) |
 | 🔄 RETRY | Previously failed, re-run this session — update the same row |
+
+> 🔍 REVIEW exists so a soft visual observation doesn't get force-fit into PASS (hiding it) or FAIL (crying wolf). It counts as *executed* in the Summary, and it belongs in Recommendations so the tester actually acts on it. Once the human decides, the row flips to ✅ or ❌ in a later session.
 
 **Session 0 — seed the board (once, right after Phase 3 classification):**
 Write every planned TC — the *whole* plan, all priorities — into the Test Results table as `⬜ PENDING`, with its priority filled in. This turns `report.md` into a master board that shows the full scope up front, so anyone can see at a glance that P2–P4 are still outstanding. Seeding is cheap (no runs happen yet) and it's what lets later sessions know what's left.
@@ -68,8 +71,10 @@ In the Evidence column, put the clickable relative link. In **Failed Test Detail
 Where the images come from:
 1. **`report/screenshots/`** — `takeScreenshot` output (name each `TC-XXX_result`, or `TC-XXX_step<N>` for intermediate captures)
 2. **`report/<timestamp>/screenshot-❌-*.png`** — auto-captured by Maestro on failure
-3. **`report/figma/`** — Figma design exports (UI validation authoring)
+3. **`report/figma/`** — design references (Figma renders or tester-supplied exports)
 4. **`report/diff/`** — `compare_screenshots.py` heatmaps (Tier 2 failures)
+5. **`report/grid/`** — gridded screenshots (Tier 3 working images; usually not linked in the report)
+6. **`report/vision/`** — Tier 3 annotated results with defect cells washed red — **this is the evidence to link for a visual finding**, not the raw screenshot
 
 > **Capture the path to the failing state, not just the crash frame.** For a failed TC, the auto `screenshot-❌` shows the end state. To make the bug reproducible, also ensure a `takeScreenshot` runs on the **screen just before the failing action** where practical, so the report can show the setup and the failure. See "Failed Test Details" below.
 
@@ -107,6 +112,7 @@ The template below is the *full* file. On a resume session you don't retype it �
 | ⬜ Pending (not yet run) | X |
 | ✅ Passed | X |
 | ❌ Failed | X |
+| 🔍 Needs review (visual, human decides) | X |
 | ⏭️ Skipped (not automatable) | X |
 | Pass rate (of executed) | X% |
 | Progress (executed / planned) | X / 60 |
@@ -122,7 +128,8 @@ The template below is the *full* file. On a resume session you don't retype it �
 | 🔧 TC-001 Happy path | P0 | Launch → login → submit | ✅ PASS | [img](.maestro/com.x/edit-recipe/report/screenshots/TC-001_result.png) | S1 (2026-06-29) |
 | 🔧 TC-002 Empty form validation | P0 | Submit empty → assert error | ❌ FAIL | [fail](.maestro/com.x/edit-recipe/report/2026-06-29_1200/screenshot-❌-TC-002.png) | S1 (2026-06-29) |
 | 🔧 TC-017 Add ingredient | P1 | Tap add → input → save | ✅ PASS | [img](.maestro/com.x/edit-recipe/report/screenshots/TC-017_result.png) | S2 (2026-06-30) |
-| 🎨 TC-010 Edit screen matches Figma | P1 | Navigate → compare vs Figma | ❌ FAIL | [design](.maestro/com.x/edit-recipe/report/figma/screen_edit.png) vs [actual](.maestro/com.x/edit-recipe/report/screenshots/TC-010_result.png) | S2 (2026-06-30) |
+| 🎨 TC-010 Edit screen matches Figma | P1 | Navigate → compare vs Figma | ❌ FAIL | [design](.maestro/com.x/edit-recipe/report/figma/TC-010_default.png) vs [annotated](.maestro/com.x/edit-recipe/report/vision/TC-010_default-report.png) | S2 (2026-06-30) |
+| 🎨 TC-011 Home layout review | P2 | Navigate → vision scan | 🔍 REVIEW | [annotated](.maestro/com.x/edit-recipe/report/vision/TC-011_default-report.png) — 2 Minor (spacing) | S2 (2026-06-30) |
 | 🔧 TC-031 Bulk delete | P2 | — | ⬜ PENDING | — | — |
 | 🔧 TC-045 Perf: scroll 1k rows | P3 | — | ⏭️ SKIP | Performance — manual only | — |
 
@@ -130,7 +137,7 @@ The template below is the *full* file. On a resume session you don't retype it �
 > - **Name** — type icon (🔧 functional / 🎨 UI validation) + TC id + short title
 > - **Priority** — P0…P4 (drives which session runs it)
 > - **Step** — the action sequence; for a failure, name the exact step that failed
-> - **Status** — ⬜ PENDING / ✅ PASS / ❌ FAIL / ⏭️ SKIP / 🔄 RETRY
+> - **Status** — ⬜ PENDING / ✅ PASS / ❌ FAIL / 🔍 REVIEW / ⏭️ SKIP / 🔄 RETRY
 > - **Evidence** — clickable workspace-relative link (full absolute paths live in Failed Test Details)
 > - **Session** — which session ran it (S1, S2 …) + date, so history is legible
 
@@ -148,6 +155,8 @@ When a TC has many steps or failed mid-way, expand it into one row per step so t
 ## Failed Test Details
 
 *One entry per ❌ FAIL. This is the bug-logging handoff — write it so `notion-bug-logger` can file the bug directly, with no re-investigation. Append new entries; keep entries from earlier sessions.*
+
+*A visual (🎨) FAIL earns the same entry. A Tier 3 Critical finding maps straight onto these fields: the finding text with its cell address becomes **Actual Result**, what the design or normal layout implies becomes **Expected Result**, and the annotated `report/vision/…-report.png` (plus the design reference, in design mode) becomes the **Screenshots** — so the developer opens one image and sees exactly which cell is wrong. Steps to Reproduce are still needed: a screenshot without the path to reach that screen isn't a filable bug.*
 
 ### ❌ TC-002 — Empty form validation
 
@@ -183,24 +192,40 @@ When a TC has many steps or failed mid-way, expand it into one row per step so t
 
 ## UI Validation Details
 
-*(Only if a 🎨 UI-validation TC ran. UI TCs are checked by durable, Agent-free checks — Tier 1 Maestro assertions + optional Tier 2 baseline diff. This section says which tier failed and why. Full screenshot paths for any failure also go into Failed Test Details above so bug logging has them.)*
+*(Only if a 🎨 UI-validation TC ran. Record which tiers ran and what each said — a "—" means that tier wasn't used for this TC, which is normal. Full screenshot paths for any failure also go into Failed Test Details above so bug logging has them.)*
 
-| TC | Screen | Tier 1 (assertions) | Tier 2 (baseline diff) | Verdict |
-|----|--------|---------------------|------------------------|---------|
-| TC-010 | Edit Form | ❌ `assertVisible: "Save Recipe"` failed — button reads "Save" | — | ❌ FAIL (static label) |
-| TC-011 | Home | ✅ all pass | ✅ diff 0.4% ≤ 1% ([heatmap](.../diff/TC-011_diff.png)) | ✅ PASS — dynamic rows/thumbnails masked |
-| TC-012 | Detail | ✅ all pass | ❌ diff 3.2% > 1% ([heatmap](.../diff/TC-012_diff.png)) | ❌ FAIL — card height drifted |
+| TC | Screen | Tier 1 (assertions) | Tier 2 (baseline diff) | Tier 3 (visual review) | Verdict |
+|----|--------|---------------------|------------------------|------------------------|---------|
+| TC-010 | Edit Form | ❌ `assertVisible: "Save Recipe"` failed — button reads "Save" | — | 1 Critical (C3–D3 title clipped) | ❌ FAIL (static label + clipping) |
+| TC-011 | Home | ✅ all pass | ✅ diff 0.4% ≤ 1% ([heatmap](.../diff/TC-011_diff.png)) | 2 Minor (spacing A11–F11) | 🔍 REVIEW — Minor only |
+| TC-012 | Detail | ✅ all pass | ❌ diff 3.2% > 1% ([heatmap](.../diff/TC-012_diff.png)) | confirms: card height drifted, B4–E6 | ❌ FAIL — card height drifted |
+| TC-013 | Settings | ✅ all pass | — (no baseline yet) | ✅ clean — promoted to baseline | ✅ PASS |
 
-> Tier 1 failures cite the exact assertion. Tier 2 failures cite the diff ratio vs. threshold and link the heatmap.
+> Tier 1 failures cite the exact assertion. Tier 2 failures cite the diff ratio vs. threshold and link the heatmap. Tier 3 findings cite **severity + cell address** and link the annotated `vision/…-report.png`.
+
+### Tier 3 findings (one line per finding, per TC)
+
+*The cell address is what makes a visual finding actionable — "title is clipped" is vague, "title clipped in C3–D3" points straight at it. Mark estimates as estimates: vision judges layout, it never measures `dp`/`sp`.*
+
+```
+TC-010 — Edit Form  (device: Pixel 7 emulator, Android 14 · design: Figma node 123:456)
+  [Critical] C3–D3: recipe title clipped at the right edge of the card; last
+             characters cut by the card boundary. → report/vision/TC-010_default-report.png
+  [Minor]    A11–F11: bottom nav icons sit tight against the divider; gap looks
+             about half the design's (estimate, not measured).
+  Excluded as data-driven: only 3 recipe cards shown vs. 6 in the design (user's data).
+```
+
+Always note what you **excluded as data-driven** — it shows the comparison was fair and stops the same difference being re-raised next session as a "new" defect.
 
 ---
 
 ## Session Log  (append one row per session — the audit trail of the resume)
 
-| Session | Date | Scope | Ran | ✅ | ❌ | ⏭️ | Notes |
-|---------|------|-------|-----|----|----|----|-------|
-| S1 | 2026-06-29 | P0 (12 cases) | 12 | 10 | 2 | 0 | TC-002, TC-008 failed → in Failed Details |
-| S2 | 2026-06-30 | P1 (15 cases) | 15 | 13 | 2 | 0 | TC-010 (UI), TC-023 failed |
+| Session | Date | Scope | Ran | ✅ | ❌ | 🔍 | ⏭️ | Notes |
+|---------|------|-------|-----|----|----|----|----|-------|
+| S1 | 2026-06-29 | P0 (12 cases) | 12 | 10 | 2 | 0 | 0 | TC-002, TC-008 failed → in Failed Details |
+| S2 | 2026-06-30 | P1 (15 cases) | 15 | 12 | 2 | 1 | 0 | TC-010 (UI, clipped title), TC-023 failed; TC-011 needs review |
 
 ---
 
@@ -217,13 +242,18 @@ After updating `report.md`, tell the user plainly — don't make them open the f
 ```
 Session 2 (P1) done — report updated: .maestro/com.example.app/edit-recipe/report/report.md
 
-  P1: ran 15 · ✅ 13 · ❌ 2
-  Cumulative: 27/60 executed · ✅ 23 · ❌ 4 · ⬜ 33 pending (P2–P4)
+  P1: ran 15 · ✅ 12 · ❌ 2 · 🔍 1
+  Cumulative: 27/60 executed · ✅ 22 · ❌ 4 · 🔍 1 · ⬜ 33 pending (P2–P4)
 
   Failures this session (details + repro steps + screenshot paths in the report,
   ready for the bug-logging phase):
-    • TC-010 (Major) — "Save Recipe" button label reads "Save"
+    • TC-010 (Major) — "Save Recipe" button label reads "Save"; title also clipped
+      at C3–D3 → report/vision/TC-010_default-report.png
     • TC-023 (Medium) — ingredient count not updated after add
+
+  Needs your call:
+    • TC-011 (🔍) — 2 Minor spacing findings on Home; annotated image in the report.
+      Tell me fix / accept and I'll flip the row next session.
 
   Next session → P2 (18 cases).
 ```

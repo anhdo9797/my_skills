@@ -1,6 +1,6 @@
 # Maestro Test Executor — Technical Documentation
 
-> A skill that converts a QA test plan into Maestro YAML flows, runs each test case immediately, validates UI against the Figma design, and produces a consolidated report.
+> A skill that converts a QA test plan into Maestro YAML flows, runs each test case immediately, validates how the UI looks (against a Figma design, or from the screenshot alone), and produces a consolidated report.
 > Designed for QA testers — no source code reading required.
 
 ---
@@ -28,16 +28,19 @@ mindmap
       Selector catalog (selectors.md)
       Screenshots (report/screenshots/)
       Baseline + masks (report/baseline/)
+      Annotated visual results (report/vision/)
       Living resumable report (report/report.md)
     References
       selectors-and-inspection.md
       yaml-flows.md
       ui-validation.md
+      visual-review.md
       reporting.md
       maestro_commands.md
     Scripts
       filter_hierarchy.py
       compare_screenshots.py
+      grid_overlay.py
 ```
 
 ---
@@ -52,7 +55,7 @@ flowchart TD
     P2["**Phase 2: Scan Existing Flows**\n• Scan .maestro/<app-id>/\n• Build selector catalog\n• Find shared flows to reuse"]
     P3["**Phase 3: Analyze Test Cases**\n• Classify: 🔧 Functional / 🎨 UI\n• Classify: ✅ Auto / ⚠️ Partial / ❌ Skip\n• Map steps → Maestro commands\n• Seed report board (all TCs = PENDING)\n• Present classification table to user"]
     P4["**Phase 4: Generate → Execute**\n• Reuse/write YAML 1 TC → run → upsert result → next TC\n• No batch-write"]
-    P5["**Phase 5: UI Validation**\n• Authoring (Agent, once): Figma → assertions + baseline\n• Regression (no Agent): Maestro + diff script"]
+    P5["**Phase 5: UI Validation — 3 tiers**\n• Tier 1 assertions + Tier 2 baseline diff (no Agent, CI-safe)\n• Tier 3 visual review (Agent, on demand):\ngrid → cell scan → severity → annotated image"]
     P6["**Phase 6: Report (resumable)**\n• Upsert rows by TC id into report.md\n• Full screenshot paths + FAIL repro steps\n• One living report + Session Log, announce"]
 
     P1 --> P2 --> P3 --> P4
@@ -71,25 +74,30 @@ flowchart TD
     A([TC from test plan]) --> B{Check type?}
 
     B -- "Behavior\n(tap, input, assert)" --> F[🔧 Functional]
-    B -- "Appearance\nmatches Figma" --> U[🎨 UI Validation]
+    B -- "Appearance\n(layout, design parity)" --> U[🎨 UI Validation]
 
     F --> F1{Automatable?}
     F1 -- "✅ Clear" --> FA[Automatable\n→ Enter Phase 4 loop]
     F1 -- "⚠️ Needs external setup" --> FP[Partially automatable\n→ Note in report]
     F1 -- "❌ Manual only" --> FS[Skip\n→ ⏭️ SKIP in report]
 
-    U --> U1{Figma URL\n+ screen reachable?}
-    U1 -- Yes --> UA["Automatable\n→ Phase 4: capture flow\n→ Phase 5: assert + diff"]
+    U --> U1{Screen reachable\nby a flow?}
     U1 -- No --> US[Skip\n→ ⏭️ SKIP in report]
+    U1 -- Yes --> U2{Design reference\navailable?}
+    U2 -- "Figma node / export" --> UD["Design mode\n→ Tier 1 assertions from the design\n→ Tier 2 baseline (optional)\n→ Tier 3 parity scan vs. gridded design"]
+    U2 -- "None" --> UH["Heuristic mode\n→ Tier 3 defect scan on the\nscreenshot alone (still a valid TC)"]
 
     style F fill:#3B5BDB,color:#fff
     style U fill:#7950F2,color:#fff
     style FA fill:#0CA678,color:#fff
-    style UA fill:#0CA678,color:#fff
+    style UD fill:#0CA678,color:#fff
+    style UH fill:#0CA678,color:#fff
     style FS fill:#868E96,color:#fff
     style US fill:#868E96,color:#fff
     style FP fill:#F76707,color:#fff
 ```
+
+> **No Figma link is not a blocker.** A missing design demotes the TC from *parity check* to *defect scan* — clipping, overlap, truncation, and misalignment are wrong regardless of what the design says.
 
 ---
 
@@ -124,25 +132,29 @@ flowchart TD
 
 ---
 
-## 5. UI Validation — Two-tier model
+## 5. UI Validation — Three-tier model
 
-> **Core principle:** the Agent participates **only once, at authoring time**. Every later regression run works with no Agent.
+> **Core principle:** Tiers 1 and 2 are the *regression contract* — they run forever with no Agent, so they work headless in CI. Tier 3 is the *on-demand* pass that creates that contract and catches what it can't express.
 
 ```mermaid
 flowchart LR
-    subgraph AUTHORING ["🟣 Authoring — Agent participates (once)"]
+    subgraph AUTHORING ["🟣 Authoring / on-demand — Agent participates"]
         direction TB
-        A1["Fetch Figma design\nvia Figma MCP get_screenshot"]
-        A2["Analyze the screen:\n• Static elements → Tier 1\n• Dynamic elements → mask\n• Chrome → ignore"]
-        A3["Tier 1: Write assertions\ninto the YAML flow"]
-        A4["Tier 2 (optional):\nApprove baseline screenshot\nCreate masks.json sidecar"]
-        A1 --> A2 --> A3
-        A2 --> A4
+        A0["Capture the screen\n(navigate → waitForAnimation\n→ takeScreenshot)"]
+        A1["Design reference (optional):\nFigma MCP get_screenshot\nor tester-supplied export\n→ report/figma/"]
+        A2["**Tier 3 visual review**\ngrid_overlay.py → scan cell by cell\n→ Critical / Minor findings\n→ --highlight → report/vision/"]
+        A3["Analyze the screen:\n• Static elements → Tier 1\n• Dynamic elements → mask\n• Chrome → ignore\n• Data-state diffs → excluded"]
+        A4["Tier 1: Write assertions\ninto the YAML flow"]
+        A5["Tier 2 (optional):\nPromote the vision-approved shot\nto baseline + masks.json sidecar"]
+        A0 --> A2
+        A1 --> A2
+        A2 --> A3 --> A4
+        A3 --> A5
     end
 
-    subgraph REGRESSION ["🟢 Regression — No Agent"]
+    subgraph REGRESSION ["🟢 Regression — No Agent, CI-safe"]
         direction TB
-        R1["Run capture flow\n(navigate → waitForAnimation\n→ takeScreenshot)"]
+        R1["Run capture flow"]
         R2["Tier 1: Maestro runs\nassertVisible / assertNotVisible\n(deterministic)"]
         R3["Tier 2 (if baseline exists):\npython3 compare_screenshots.py\nbaseline.png actual.png --masks-file"]
         R4{Both tiers pass?}
@@ -157,10 +169,45 @@ flowchart LR
     end
 
     AUTHORING -->|"Assertions baked\ninto YAML\n+ baseline.png\n+ masks.json"| REGRESSION
+    R6 -.->|"drift needs explaining:\nwhat changed, does it matter?"| A2
 
     style AUTHORING fill:#F3F0FF,stroke:#7950F2
     style REGRESSION fill:#EBFBEE,stroke:#0CA678
 ```
+
+### 5b. Tier 3 — the visual review pass
+
+```mermaid
+flowchart TD
+    S(["report/screenshots/TC-XXX_state.png"]) --> G["grid_overlay.py --cols 6 --rows 13\n→ report/grid/TC-XXX_state-grid.png"]
+    D(["report/figma/TC-XXX_state.png\n(design mode only)"]) -.->|"SAME --cols/--rows"| GD["→ report/grid/TC-XXX_design-grid.png"]
+
+    G --> SCAN["🔍 Scan cell by cell\n(heuristic checklist, or\nsame-cell vs. design-grid)"]
+    GD -.-> SCAN
+
+    SCAN --> EXCL{"Difference is\ndata-driven?\n(item count, names,\nphotos, badges)"}
+    EXCL -- Yes --> NOTE["Exclude + note it\n(NOT a defect)"]
+    EXCL -- No --> SEV{Severity?}
+
+    SEV -- "Critical\n(clipped, overlap,\noff-screen, missing)" --> CR["❌ TC FAIL\n+ Failed Test Details entry"]
+    SEV -- "Minor\n(spacing, slight off-center,\nshade — subjective)" --> MI["🔍 TC REVIEW\n(human decides)"]
+    SEV -- "No findings" --> OK["✅ TC PASS\n→ promote to Tier 2 baseline"]
+
+    CR --> HL["grid_overlay.py --highlight 'C3:D3'\n→ report/vision/TC-XXX_state-report.png"]
+    MI --> HL
+    HL --> REP["Evidence in report.md\n+ severity + cell address\nin UI Validation Details"]
+    NOTE --> REP
+    OK --> REP
+
+    style CR fill:#D9480F,color:#fff
+    style MI fill:#F76707,color:#fff
+    style OK fill:#0CA678,color:#fff
+    style NOTE fill:#868E96,color:#fff
+    style SEV fill:#1C2333,color:#fff
+    style EXCL fill:#1C2333,color:#fff
+```
+
+> **Two rules keep Tier 3 trustworthy.** *Vision estimates, it does not measure* — never claim a `dp`/`sp` value from a screenshot; that's a 🔍 REVIEW note. And *data state is not design state* — the app showing 3 items where the design shows 6 is the user's data, not a defect. Bias **Minor** when uncertain: a false Critical erodes trust faster than a missed nitpick.
 
 ---
 
@@ -242,12 +289,14 @@ mindmap
         navigate_to_screen.yaml
       report/
         report.md [THE one living report - updated in place every session]
-        screenshots/ [takeScreenshot output]
-        figma/ [Figma exports at authoring time]
+        screenshots/ [takeScreenshot output - clean captures]
+        figma/ [design refs: Figma renders or tester exports]
         baseline/ [approved baseline images]
           TC-010.png
           TC-010.masks.json
         diff/ [heatmaps on Tier 2 failure]
+        grid/ [gridded images - what Tier 3 vision reads]
+        vision/ [Tier 3 annotated results - defect cells washed red]
         YYYY-MM-DD_HHmm/ [maestro --test-output-dir logs, one dir per run]
 ```
 
@@ -265,23 +314,25 @@ mindmap
       Last updated
     Summary [cumulative across all sessions]
       Total planned / Executed / Pending
-      Passed / Failed / Skipped
+      Passed / Failed / Needs review / Skipped
       Pass rate + Progress X/60
       "This session" line
     Test Results Table [= progress board]
       Columns: Name | Priority | Step | Status | Evidence | Session
-      Status: ⬜ PENDING / ✅ PASS / ❌ FAIL / ⏭️ SKIP / 🔄 RETRY
+      Status: ⬜ PENDING / ✅ PASS / ❌ FAIL / 🔍 REVIEW / ⏭️ SKIP / 🔄 RETRY
       Upsert by TC id - never overwrite other sessions
-      Evidence: link + full path
+      Evidence: link + full path [visual TC → report/vision/ image]
     Failed Test Details [= handoff to bug logging]
       Priority + Suggested severity
       Environment
       Steps to Reproduce [from clean state]
-      Expected vs Actual
+      Expected vs Actual [visual: finding text + cell address]
       Screenshots [absolute paths]
       Reproduction flow [YAML path]
     UI Validation Details
-      Tier 1 / Tier 2 verdict
+      Tier 1 / Tier 2 / Tier 3 verdict per TC
+      Tier 3 findings [severity + cell address + annotated image]
+      Excluded as data-driven [keeps the comparison auditable]
     Session Log [audit trail of each session]
     Recommendations
 ```
@@ -323,11 +374,13 @@ flowchart TD
 |-----------|-----------|
 | Need an unknown selector | `references/selectors-and-inspection.md` |
 | Write / fix a YAML flow | `references/yaml-flows.md` |
-| Author a UI TC (Figma → assertions + baseline) | `references/ui-validation.md` |
+| Choose a UI tier; author assertions + baseline from a design | `references/ui-validation.md` |
+| Judge a screen from its screenshot (grid, cell scan, severity → verdict) | `references/visual-review.md` |
 | Produce / update the report, or resume a session | `references/reporting.md` |
 | Find the right Maestro command | `references/maestro_commands.md` |
 | Compress a hierarchy dump | `scripts/filter_hierarchy.py` |
-| Run a visual baseline diff | `scripts/compare_screenshots.py` |
+| Run a visual baseline diff (Tier 2) | `scripts/compare_screenshots.py` |
+| Grid a screenshot / mark defect cells red (Tier 3) | `scripts/grid_overlay.py` |
 
 ---
 
@@ -339,8 +392,15 @@ flowchart TD
 | Write all YAML first, then run | 1 TC → run → fix → next TC |
 | Hardcoded `sleep: 5000` | `waitForAnimationToEnd` / `extendedWaitUntil` |
 | Read app source code | YAML flows + MCP inspect + docs |
-| Agent in the regression loop | Tier 1 assertions + Tier 2 diff script |
+| Agent in the regression loop | Tier 1 assertions + Tier 2 diff script; Tier 3 on demand only |
 | Flag status bar / API images as bugs | Mask chrome, don't assert dynamic content |
+| FAIL a visual TC because the app shows fewer items than the design | Data state ≠ design state — exclude it and say so |
+| Skip a "kiểm tra giao diện" request for lack of a Figma link | Tier 3 heuristic mode — the screenshot alone catches clipping / overlap |
+| Read a raw screenshot for a visual review | Grid it first, scan cell by cell, cite cell addresses |
+| Read raw + gridded version of the same shot | Only the gridded one — it carries everything |
+| Wash cells red on a hunch | Highlight only visible evidence; estimates stay text notes |
+| Claim `24dp` / `16sp` from a screenshot | Vision estimates, never measures → 🔍 REVIEW |
+| Force a Minor visual finding into PASS or FAIL | 🔍 REVIEW — evidence captured, human decides |
 | Re-inspect the same screen repeatedly | Persist to `selectors.md`, read it back |
 | Index-based selector | `id`, `testId`, or `text` |
 | `--debug-output` | Always use `--test-output-dir` |
