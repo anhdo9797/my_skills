@@ -44,7 +44,7 @@ screenshot that proves it. This is the heart of the document — spend words her
 
 | Stage | What happens | Evidence |
 |---|---|---|
-| Input | Live camera capture; gallery import also available via the icon left of the shutter | `01-camera.png` |
+| Input | Live capture, emulator virtual scene, fixture `fixture-01-monstera.png` (received by the app at 960×1280); gallery import also available via the icon left of the shutter and tested with the same fixture | `01-camera.png` |
 | Processing | Server-side — fails with "No connection" in airplane mode | `07-offline.png` |
 | Output | species, health verdict, confidence %, 3 care tips | `03-result.png` |
 | Persistence | Survives kill + relaunch; appears in History | `04-history.png` |

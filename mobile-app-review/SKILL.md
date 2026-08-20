@@ -5,7 +5,9 @@ description: >-
   real device or emulator via the mobile-mcp MCP server. Researches the store
   listing, installs the app, then investigates it like a product analyst rather
   than a screenshotter: runs the app's core value flow end-to-end with real input
-  (scan, search, order, generate...), traces where the resulting data goes and
+  (scan, search, order, generate...) — camera-driven flows included, which it
+  runs for real by feeding fixture images into the camera instead of skipping
+  them — traces where the resulting data goes and
   whether it persists, tests both success and failure cases for flows like login
   or checkout, produces data when a list is empty instead of reporting it as
   empty — and alongside that maps every screen with vision plus the
@@ -15,14 +17,18 @@ description: >-
   analyze, review, teardown, reverse-engineer, benchmark, test, or "study" a
   mobile app or a competitor app — including when they only say "phân tích app
   X", "review app X", "xem app X có gì", "app X hoạt động thế nào", "test luồng
-  login của app X", "check the paywall / subscription tiers of X", "where does
+  login của app X", "test luồng scan/camera của app X",
+  "check the paywall / subscription tiers of X", "where does
   app X put its ads", "map the features of X", or paste a Play Store / App Store
   link or a bundle id like com.example.app. Also use it to continue an unfinished
   review ("tiếp tục review app X", "resume the teardown").
 compatibility: >-
   Requires the mobile-mcp MCP server (npx -y @mobilenext/mobile-mcp@latest) with
   at least one connected Android device/emulator or iOS simulator. Python 3 for
-  the bundled changelock script. WebSearch/WebFetch for store research.
+  the bundled changelock script. WebSearch/WebFetch for store research. Camera
+  flows additionally need adb (Android) or xcrun (iOS) on PATH, an emulator whose
+  back camera is set to virtualscene, and Pillow if the script should generate
+  fixture images.
 ---
 
 # Mobile App Review
@@ -77,6 +83,16 @@ in-list ads live, and none of it is visible while the list is empty. That's what
 makes an empty-list report read as complete while covering nothing.
 `references/flow-investigation.md` step 5 lists the ways to produce data, including
 when live camera capture isn't available to you.
+
+**A camera flow is not a blocked flow.** When the core flow runs through a
+camera — scan, QR, OCR, document capture, try-on — you feed it a fixture image
+rather than marking it untestable: the Android emulator can hang your own image
+in front of the lens and swap it per case, every target can import from the photo
+library, and a physical device can be pointed at a fixture displayed on screen.
+`references/camera-flows.md` has the three routes and
+`scripts/camera_fixture.py check` names the one your target supports. For a
+scanner app this *is* the review; "camera opened, not tested further" is the
+screenshotter's version of it.
 
 **Test success before you test failure.** For any flow with cases — login, signup,
 checkout, search, upload — complete the happy path with valid input *first*, then
@@ -164,6 +180,17 @@ candidates with developer name and install count and let them pick.
    only if the user hands you a build file.
 5. `mobile_launch_app` and record the app version (Android:
    `adb shell dumpsys package <pkg> | grep versionName`).
+6. If the listing or the app name suggests a camera feature (scan, QR, OCR,
+   "identify", "try on", document upload), check the camera now — before you plan
+   the flow, because an AVD created with the camera switched off makes every
+   camera case impossible, and that's a one-command fix:
+
+   ```bash
+   python3 <skill-dir>/scripts/camera_fixture.py check
+   ```
+
+   Then set it up per `references/camera-flows.md` and generate the fixture set.
+   Doing this here rather than mid-flow saves an emulator cold boot later.
 
 Initialize the workspace and changelock now, before exploring:
 
@@ -212,6 +239,13 @@ has run once. Doing screens first means visiting half of them twice.
 Update the flow in the changelock (`update-flow`) after each case, the same
 discipline as screens. `status` warns while a core flow is unfinished — that
 warning means the review isn't yet usable, however many screens are done.
+
+If the flow's input is a camera, read `references/camera-flows.md` alongside this
+and run the fixture set: one canonical subject for the happy path, then the
+repeat, alternative, out-of-domain and degraded variants for the case matrix.
+Record which route produced each case — live capture and gallery import are
+different findings, and writing up an import as a scan is exactly the kind of
+claim the evidence rules forbid.
 
 Secondary flows (login, upgrade, share, sync) get the same treatment, after the
 screen loop or interleaved with it as budget allows. Their case matrices always
@@ -329,6 +363,9 @@ reviews/<app-slug>/<platform>/
 │       ├── README.md            # the Home screen report
 │       ├── profile/README.md    # reached from Home
 │       └── scan_plant/README.md
+├── fixtures/                    # camera fixtures, reused on resume
+│   ├── manifest.json            # subject, expected answer, source, licence
+│   └── fixture-01-monstera.png
 ├── screenshots/
 │   ├── flows/scan-plant/01-camera.png
 │   └── home/profile/01-initial.png
@@ -373,6 +410,39 @@ apply rather than filling them with "N/A":
 
 Run `python3 scripts/changelock.py --help` (or `<cmd> --help`) for exact flags.
 
+## Camera fixture script
+
+`scripts/camera_fixture.py` gets a known image into the app's capture path so
+camera flows can be run instead of skipped. Read `references/camera-flows.md`
+before using it — the routes have different fidelity and the report must say
+which one produced each case.
+
+| Command | What it does |
+|---|---|
+| `check` | Per-target capability report and which route to take |
+| `enable-avd-cam` | Switch an AVD's camera on (`hw.camera.back`); needs a cold boot |
+| `scene` | Install (or `--restore`) the virtual-scene poster geometry, `--preset fill\|fit` |
+| `show` | Swap the emulator's live camera image — no restart, ~1 s per case |
+| `fetch` | Download candidate subject photos (Wikimedia Commons) with licence and source recorded |
+| `make-fixture` | Promote a candidate to a fixture, or build a test card |
+| `barcode` | Generate an EAN-13/UPC-A/QR/Code128 fixture with a known payload |
+| `degrade` | Derive a boundary-case variant (blur, rotate, dark, crop, small…) |
+| `verify` | Decode a fixture or a camera screenshot — separates a weak scanner from an unreadable fixture |
+| `manifest` | List the fixtures with subject, expected answer, source and licence |
+| `gallery` | Seed a fixture into the Android gallery or the iOS Simulator library |
+
+Optional extras, only if the app needs them: `pip3 install segno` (QR),
+`python-barcode` (Code128 and friends), `zxing-cpp opencv-python-headless`
+(`verify`). Everything else runs on Pillow alone.
+
+**Fixtures fetched from the internet must be looked at before use.** `fetch`
+saves candidates as `verified: false` for exactly this reason: a downloaded image
+that isn't what it claims — the wrong part of the plant, a diagram, a collage —
+makes a working app look broken, and that mistake is invisible in the finished
+report. Open each candidate, confirm it shows what a user would actually
+photograph, then promote it. Barcodes are never downloaded: generate them, so the
+expected decode is known exactly.
+
 ## Preflight
 
 If the `mobile_*` tools aren't available, the mobile-mcp server isn't connected.
@@ -410,6 +480,11 @@ context the whole time:
 - `references/exploration.md` — the per-screen loop mechanics: route navigation,
   element classification, dedupe by screen signature, scroll capture, recovery
   from stuck states, and how to handle modals, permissions, and interstitials
+- `references/camera-flows.md` — **read this when the flow needs the camera.**
+  The three routes (emulator virtual scene, photo-library import, physical rig),
+  the measured poster presets, live fixture swapping, the fixture set a camera
+  flow needs, the camera case matrix, and what each route does *not* prove.
+  Driven by `scripts/camera_fixture.py`
 - `references/monetization.md` — ad placement taxonomy, paywall trigger catalog,
   subscription tier extraction, and the analysis templates
 - `references/store-research.md` — what to pull from Play Store / App Store /

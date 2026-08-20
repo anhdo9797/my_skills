@@ -181,7 +181,12 @@ Real apps interrupt constantly. Handle these without derailing:
 - **OS permission dialog** — note which permission and when it's asked (that's a
   finding: asking for location on first launch vs. at point of use is a real UX
   signal). Grant it if the feature needs it and it's harmless; deny if it's
-  invasive and you can continue, then note the degraded behavior.
+  invasive and you can continue, then note the degraded behavior. On Android you
+  can also set permissions from the shell, which makes both directions testable:
+  `adb shell pm grant|revoke <pkg> android.permission.CAMERA`.
+- **A camera opens** — that's a flow step, not a screen. Don't report "camera
+  opened" and stop: `references/camera-flows.md` gets a known image in front of
+  the lens so the flow can actually run.
 - **Interstitial ad** — screenshot it *before* dismissing (this is evidence for
   the monetization report: which action triggered it, format, how long until the
   close button appears). Then close via the X. Don't tap the ad body.

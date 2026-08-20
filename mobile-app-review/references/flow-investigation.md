@@ -88,7 +88,8 @@ Two reasons, and both matter:
 A happy path counts as done only when you have all of these:
 
 - **Real input**, not a placeholder. A scanner needs a real subject; a search needs
-  a query with results; a form needs plausible data.
+  a query with results; a form needs plausible data. For camera input that subject
+  is a prepared fixture image — `references/camera-flows.md`.
 - **Every intermediate state screenshotted** — loading, progress bar, interstitial
   ad, permission prompt, success toast. The states between tap and result are where
   the monetization and the perceived-performance tricks live.
@@ -189,7 +190,7 @@ why.
 | 1 | Clear photo of a known subject | happy | The full output shape: fields, confidence, tips |
 | 2 | A second, different known subject | variant | Is the output shape stable; does confidence vary meaningfully |
 | 3 | The **same** input twice | variant | Deterministic or not. Two different answers for one input is a headline finding |
-| 4 | Gallery import vs live camera | variant | Whether both entry points exist and whether results differ |
+| 4 | Gallery import vs live camera | variant | Whether both entry points exist and whether results differ (`references/camera-flows.md` runs both) |
 | 5 | Out-of-domain subject (a hand, a wall, a photo of a photo) | abuse | **Does the model have a reject option?** A confident wrong answer is a real quality defect worth reporting |
 | 6 | Blurry / dark / partial subject | boundary | Quality gating, retry prompts |
 | 7 | The scan that exceeds the free quota | boundary | Where exactly the paywall fires — before capture or after, which is a deliberate and revealing choice |
@@ -212,13 +213,14 @@ Ways to produce data, in order of preference:
    sample", "Add your first…", or a demo item. Using it is also how you evaluate
    whether the app solves its own cold-start problem.
 3. **Create manually** via the `+` / Add / Import affordance.
-4. **Feed a fixture instead of live capture.** For camera features, a gallery
-   import path is usually available. Get an image onto the device first:
-   `adb push photo.jpg /sdcard/Pictures/` then
-   `adb shell am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d file:///sdcard/Pictures/photo.jpg`,
-   or open an image URL in the device browser and save it. If only live camera
-   works, point it at an image displayed on another screen — an emulator's virtual
-   camera can be pointed at a photo the same way.
+4. **Feed a fixture into the camera.** A camera flow is not a blocked flow. On
+   an Android emulator you can hang your own image in front of the lens and swap
+   it per case without a restart; on any target you can seed the photo library and
+   use the import path; on a physical device you can display the fixture on the
+   host screen. Read `references/camera-flows.md` and run
+   `python3 <skill-dir>/scripts/camera_fixture.py check` — it names the route for
+   the target you have and catches the AVD that was created with no camera at
+   all.
 5. **Log in with a test account** that already has data. If the branch clearly
    needs one and you have none, ask the user once — but ask *after* trying the
    options above, not instead of them.
