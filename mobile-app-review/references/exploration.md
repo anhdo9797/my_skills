@@ -77,7 +77,11 @@ scrolled-in content brings new nodes, and this is where mid-feed ads and
 "upgrade" upsells hide. Scroll back to the top before moving on so the screen is
 in a known state.
 
-Also check horizontal carousels and side-scrolling rows the same way.
+Also check horizontal carousels and side-scrolling rows the same way, and any
+partial sheet, truncated text, or full-bleed image the way
+`references/screen-reading.md`'s "Reading affordances, not just content" table
+describes — a grabber bar or a dimmed background behind a small panel means
+swipe it open before you screenshot it as the screen.
 
 **6. Classify every element.** See the table below. Classification is what turns
 an inventory into a plan: `navigation` and `action` elements become queue entries,
@@ -146,9 +150,23 @@ signatures of screens already in the changelock (`status` prints them).
   [Settings](../settings/README.md)") and mark the queue entry `skipped` with a
   note pointing at the existing report.
 - **Near-match** (same layout, different data — e.g. a detail screen for a
-  different item) → document the *pattern* once, and note in the report which
-  variants exist and how they differ. Reviewing twenty item-detail screens teaches
-  you nothing the first one didn't.
+  different item you could browse to indefinitely) → document the *pattern* once,
+  and note in the report which variants exist and how they differ. Reviewing
+  twenty item-detail screens teaches you nothing the first one didn't.
+
+**This collapsing rule is for content you could sample many more instances of —
+it is not a license to skip steps in a linear sequence just because they share a
+template.** Onboarding questions, checkout steps, a multi-page form, a setup
+wizard: each step appears exactly once, carries content the previous step
+doesn't, and once you tap past it in this session you may never see it again. A
+"single-choice card" layout reused for three different onboarding questions is
+not one near-match, it's three distinct pieces of evidence — screenshot and
+record every one, even though a careless signature check would call them the
+same screen. The test that tells the two apart: **can the user navigate back to
+this exact step and see it again on demand?** An item-detail screen, yes — pick
+another item, you're back in an equivalent one. A step in a wizard, no — it's
+transient, and transient means capture it now or the review has a hole in it
+that no later session can patch.
 
 Store the signature with each screen via `update-screen --signature`.
 

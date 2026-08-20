@@ -199,6 +199,11 @@ def cmd_status(args: argparse.Namespace) -> None:
         if open_core:
             print(f"  ! core flow unfinished: {', '.join(open_core)}."
                   " Finish it before spending more budget on screens.")
+        for fid, flow in flows.items():
+            no_ev = [c["id"] for c in flow.get("cases", [])
+                     if c.get("status") == "done" and not c.get("evidence")]
+            if no_ev:
+                print(f"  ! flow '{fid}' has case(s) with no evidence: {', '.join(no_ev)}")
     else:
         print("flows: none registered — name the app's core flow before exploring.")
     print()
@@ -217,6 +222,13 @@ def cmd_status(args: argparse.Namespace) -> None:
         print(f"  {icon} {sid} — {scr.get('title', '')}{note}")
         if args.verbose and scr.get("signature"):
             print(f"        sig: {scr['signature']}")
+
+    no_shot_done = [sid for sid, scr in screens.items()
+                    if scr.get("status") == "done" and not scr.get("screenshots")]
+    if no_shot_done:
+        print()
+        print(f"  ! {len(no_shot_done)} screen(s) marked done with no screenshots: "
+              + ", ".join(no_shot_done))
 
     if data["queue"]:
         print()
@@ -356,13 +368,34 @@ def cmd_update_flow(args: argparse.Namespace) -> None:
         else:
             flow["cases"].append(case)
 
+    if flow["status"] == "done":
+        done, total, happy = flow_case_counts(flow)
+        if not happy and not args.force:
+            sys.exit(
+                f"Refusing to mark flow '{args.id}' done with no completed 'happy' "
+                "case. Error and boundary cases have no baseline to be judged "
+                "against without one — run the success path first, or pass "
+                "--force if this flow is a deliberate exception (e.g. genuinely "
+                "blocked)."
+            )
+
     flow["updated_at"] = now()
     save(args.root, data)
     done, total, happy = flow_case_counts(flow)
     print(f"{args.id} -> {flow['status']}  ({done}/{total} cases)")
-    if flow["status"] == "done" and not happy:
-        print("  Warning: no completed 'happy' case. Error cases have no baseline"
-              " to be judged against — run the success path before closing this flow.")
+    if flow["status"] == "done":
+        non_happy_done = sum(1 for c in flow["cases"]
+                             if c.get("kind") != "happy" and c.get("status") == "done")
+        if non_happy_done == 0:
+            print("  Note: only a happy-path case is recorded. Most flows have an"
+                  " everyday failure or empty-result case (wrong input, no results,"
+                  " quota/paywall, offline) — add it before treating this flow as"
+                  " fully reviewed. See flow-investigation.md step 4.")
+        no_evidence = [c["id"] for c in flow["cases"]
+                       if c.get("status") == "done" and not c.get("evidence")]
+        if no_evidence:
+            print(f"  ! case(s) with no --evidence recorded: {', '.join(no_evidence)}"
+                  " — the report still needs a screenshot for each of these.")
 
 
 def cmd_add_screen(args: argparse.Namespace) -> None:
@@ -429,6 +462,15 @@ def cmd_update_screen(args: argparse.Namespace) -> None:
     for shot in args.screenshot or []:
         if shot not in scr["screenshots"]:
             scr["screenshots"].append(shot)
+
+    if scr["status"] == "done" and not scr["screenshots"] and not args.force:
+        sys.exit(
+            f"Refusing to mark '{args.id}' done with zero screenshots attached.\n"
+            "Every claim in a screen report needs a screenshot behind it. Pass at "
+            "least one --screenshot, or use --status blocked/skipped if the screen "
+            "genuinely can't be captured. --force overrides this for a real "
+            "exception — it is not a way to skip the extra minute of work."
+        )
 
     if scr["status"] in ("done", "blocked", "skipped") and args.id in data["queue"]:
         data["queue"].remove(args.id)
@@ -536,9 +578,14 @@ def cmd_add_edge(args: argparse.Namespace) -> None:
         "note": args.note,
         "recorded_at": now(),
     }
-    if args.status == "observed" and not edge["evidence"]:
-        print("warning: an observed edge with no --evidence cannot be audited."
-              " Attach the screenshot that shows the destination.")
+    if args.status == "observed" and not edge["evidence"] and not args.force:
+        sys.exit(
+            "Refusing to record an observed edge with no --evidence.\n"
+            "Attach the screenshot that shows the destination — that's what lets a "
+            "reader trust this arrow instead of taking your word for it. Use "
+            "--status inferred if you didn't actually traverse this transition, or "
+            "--force to override for a genuine exception."
+        )
     for existing in data["edges"]:
         if edge_key(existing) == edge_key(edge):
             existing.update(edge)
@@ -953,6 +1000,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help='JSON object, merged by id, e.g. \'{"id":"wrong-password",'
                          '"kind":"error","observed":"...","verdict":"ok"}\'. Repeatable')
     sp.add_argument("--note", default=None)
+    sp.add_argument("--force", action="store_true",
+                    help="Override the no-happy-case-on-done guard for a genuine exception")
     sp.set_defaults(func=cmd_update_flow)
 
     sp = with_root(sub.add_parser("add-screen", help="Queue a discovered screen"))
@@ -977,6 +1026,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--precondition", default=None)
     sp.add_argument("--route", default=None)
     sp.add_argument("--note", default=None)
+    sp.add_argument("--force", action="store_true",
+                    help="Override the no-screenshot-on-done guard for a genuine exception")
     sp.set_defaults(func=cmd_update_screen)
 
     sp = with_root(sub.add_parser("add-node",
@@ -1007,6 +1058,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--evidence", action="append", help="Screenshot path; repeatable")
     sp.add_argument("--tag", action="append", help="Free tag, e.g. journey; repeatable")
     sp.add_argument("--note", default=None)
+    sp.add_argument("--force", action="store_true",
+                    help="Override the no-evidence-on-observed guard for a genuine exception")
     sp.set_defaults(func=cmd_add_edge)
 
     sp = with_root(sub.add_parser("render-diagram",

@@ -93,6 +93,13 @@ A happy path counts as done only when you have all of these:
 - **Every intermediate state screenshotted** — loading, progress bar, interstitial
   ad, permission prompt, success toast. The states between tap and result are where
   the monetization and the perceived-performance tricks live.
+- **The result expanded to its full state, not its arrival state.** Results
+  routinely land in a bottom sheet peeking a fraction of the screen, or a card
+  with truncated text — recognize the affordance (grabber bar, dimmed background,
+  "Show more") and act on it before you screenshot. See "Reading affordances, not
+  just content" in `references/screen-reading.md` for the signal-to-probe table.
+  A peek-state screenshot is not the output; it's a photo of the drawer the
+  output is still sitting in.
 - **The output recorded verbatim** — every field, number, unit, confidence value,
   and piece of copy. Paraphrasing the result throws away the thing you came for.
 - **Rough timing.** "~4 s" vs "~40 s" is a hard product fact and costs you nothing
@@ -157,6 +164,23 @@ the ordinary cases is effort spent on the least likely path. Hunting only for
 breakage also produces a distorted report: the user asked what the app *does*, and
 a list of things that go wrong is not an answer to that.
 
+**For any lookup, search, or scan flow, "valid input that legitimately comes back
+empty" is a mandatory `error` case, not an optional one.** A barcode that scans
+cleanly but isn't in the app's database, a search with zero results, a lookup for
+an item the app doesn't carry — these are routine, everyday outcomes for a real
+user, completely different from the `abuse` row (garbage/out-of-domain input) a
+few rows down. Skipping it because the happy-path scan already "worked" leaves
+the single most common failure a user of the feature will hit completely
+undocumented. Trigger it deliberately (an unknown barcode, a nonsense search
+term) and screenshot the result screen — "not found" is a UI state with its own
+copy and layout, worth exactly as much evidence as the success state.
+
+The changelock reflects this at the tooling level: `update-flow --status done`
+flags (though does not block) a flow whose case matrix has no case besides
+`happy`, and any case recorded without `--evidence` gets flagged too — a case row
+in a table with no screenshot behind it is exactly the kind of claim the evidence
+rules forbid.
+
 Run each case as hypothesis → action → verdict (the cycle in
 `screen-reading.md`). Refuted hypotheses are the most valuable rows in the table.
 
@@ -191,10 +215,11 @@ why.
 | 2 | A second, different known subject | variant | Is the output shape stable; does confidence vary meaningfully |
 | 3 | The **same** input twice | variant | Deterministic or not. Two different answers for one input is a headline finding |
 | 4 | Gallery import vs live camera | variant | Whether both entry points exist and whether results differ (`references/camera-flows.md` runs both) |
-| 5 | Out-of-domain subject (a hand, a wall, a photo of a photo) | abuse | **Does the model have a reject option?** A confident wrong answer is a real quality defect worth reporting |
-| 6 | Blurry / dark / partial subject | boundary | Quality gating, retry prompts |
-| 7 | The scan that exceeds the free quota | boundary | Where exactly the paywall fires — before capture or after, which is a deliberate and revealing choice |
-| 8 | Airplane mode | error | On-device vs server-side, and offline messaging |
+| 5 | A valid scan/lookup that legitimately has no match (unknown barcode, unlisted item) | error | **The most common real-world failure — mandatory, not optional.** What the "not found" screen looks like, verbatim copy, and whether it offers a next step |
+| 6 | Out-of-domain subject (a hand, a wall, a photo of a photo) | abuse | **Does the model have a reject option?** A confident wrong answer is a real quality defect worth reporting |
+| 7 | Blurry / dark / partial subject | boundary | Quality gating, retry prompts |
+| 8 | The scan that exceeds the free quota | boundary | Where exactly the paywall fires — before capture or after, which is a deliberate and revealing choice |
+| 9 | Airplane mode | error | On-device vs server-side, and offline messaging |
 
 ## Step 5 — An empty list is a task, not a finding
 

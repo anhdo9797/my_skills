@@ -139,6 +139,31 @@ user real money or real data:**
   `blocked` in the changelock, note what's behind it, and move on. Ask the user
   once, at the end of the session, whether they want to supply a test account.
 
+**Hard completeness limits — these exist because the two most common ways this
+review goes wrong are silent, not loud: a screen gets described from an
+inference instead of a look, or a flow gets called finished after only its easy
+case.** The changelock enforces these mechanically, not just on the honor
+system, because judgment erodes under context pressure exactly when it matters
+most:
+
+- `update-screen --status done` refuses a screen with zero screenshots attached.
+  If a screen genuinely can't be captured, that's `blocked`, not `done`.
+- `update-flow --status done` refuses a flow with no completed `happy` case, and
+  flags (without blocking) a flow closed with *only* a happy case — most flows
+  have an everyday failure or empty-result case (wrong input, no results,
+  quota/paywall, offline) that a real user hits constantly, and it belongs in the
+  case matrix before the flow counts as reviewed.
+- `add-edge --status observed` refuses a transition with no `--evidence`. A
+  transition you can't point at a screenshot for is indistinguishable from one
+  you assumed.
+- A wizard or stepper (onboarding, checkout, a multi-question form) is as many
+  screens as it has steps, never one — see the near-match rule in
+  `references/exploration.md`.
+
+Each of these has a `--force` escape hatch for a genuine exception. Reaching for
+it to get past the warning instead of doing the extra minute of work — one more
+screenshot, one more case — defeats the entire point of having the guard.
+
 ## Workflow
 
 Six phases. Phase 0–2 run once per app; phase 3 is the long loop; 4–5 close out.
@@ -225,9 +250,19 @@ the map. Each stage makes the next one cheaper.
 
 #### 3a. Overview pass (one shot, no depth)
 
-Fresh-install the impression: go through onboarding, land on the main screen, and
-open each top-level destination (bottom tabs, hamburger, main CTAs) just far
-enough to name it. Don't inventory them yet. Produce
+Fresh-install the impression: walk onboarding **screenshotting every single
+step**, not just the first one. This is the one moment in the whole review when
+this state exists at all — a reinstall rarely reproduces it exactly, and it's the
+raw material for the first-run journey diagram, so a step you don't capture now
+is gone for good, not deferred to a later pass. A 3-step onboarding is 3
+screenshots and 3 `add-edge --tag journey` calls, not one; onboarding steps
+sharing a visual template (e.g. the same "single-choice card" layout asking
+different questions) are still separate, once-only pieces of evidence — see the
+near-match rule in `references/exploration.md` for why they must not be
+collapsed. Then land on the main screen and open each top-level destination
+(bottom tabs, hamburger, main CTAs) just far enough to name it — this second part
+is a genuine skim, because those screens live in the app permanently and the
+per-screen loop (3c) will revisit and inventory them properly. Produce
 `00-overview/app-map.md`: the feature clusters, the navigation shape, first
 impressions of where money is made, and — the part that drives everything after
 this — **the app's core flow, named in one line**, plus the secondary flows worth

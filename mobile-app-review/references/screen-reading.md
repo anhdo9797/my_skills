@@ -56,6 +56,35 @@ explicitly: *is anything cropped at any edge?* A row that's half-visible at the
 bottom, a card peeking in from the right, a scrollbar hint. Each of those is a
 promise that there is more, and each one you ignore is a hole in the report.
 
+### Reading affordances, not just content
+
+A partially-revealed element is not a smaller version of the full thing — it's a
+promise that a gesture reveals more, and transcribing what's visible without
+acting on that promise is how a report ends up describing the loading dock
+instead of the payload. This matters most exactly where it's easy to miss: the
+**result of the core flow** frequently lands in a bottom sheet peeking a tenth of
+the screen, not the full result — a scan, a search hit, an order confirmation.
+Screenshotting that peek state and calling it "the result" is a hole in the
+report shaped exactly like the thing the user ran the flow to see.
+
+Recognize the signal, know the matching probe, before you write anything down:
+
+| Visual signal | What it usually means | Probe |
+|---|---|---|
+| A short pill/bar at the top-center of a panel (a grabber) | Draggable bottom sheet | Swipe up **on the sheet**, not the background, until it stops moving or reaches full height |
+| A panel occupying a small slice of the screen, rounded top corners, background dimmed above it | Peek-state bottom sheet | Same — swipe up; if it snaps to a middle height, keep going to the max |
+| A full-bleed photo/image with no visible chrome around it | Often opens a dedicated fullscreen/zoom viewer on tap | Tap it once; check for pinch-zoom, swipe-to-dismiss, and any action bar that only appears in that viewer |
+| Text cut with "…", a "Show more" link, or a fade-out gradient at the bottom edge | Expandable/truncated text | Tap "Show more" or the text block itself |
+| A row or card visibly cut off at the screen's edge | More content in that direction | Scroll/swipe past it — don't stop at the first fully-visible item |
+| A "+3" badge, a stacked-card look, a carousel with a sliver of the next item showing | More items than currently on screen | Scroll/swipe until the count or content stops changing |
+| A chevron (⌄/⌃/›) beside a row or section header | Collapsible section | Tap it |
+
+The unifying test, when in doubt: **if an element looks like it's showing a
+fraction of something, it usually is.** This is exactly what
+`references/flow-investigation.md` means by "every intermediate state
+screenshotted" for the core flow's happy path — a peek sheet mid-expansion is an
+intermediate state, not the destination.
+
 ## Step 2 — Six lenses
 
 Pass over the same screenshot six times, each time asking one question. Different
@@ -248,3 +277,9 @@ user has no way to audit your claims except the screenshots you attach.
   whether the 5-scan limit is daily or per-install; would need a second session
   the following day to confirm." That sentence is genuinely useful. A confident
   guess in its place is not.
+- **The changelock enforces the screenshot floor mechanically, not just on trust.**
+  `update-screen --status done` refuses a screen with no `--screenshot`, and
+  `add-edge --status observed` refuses a transition with no `--evidence`. Hitting
+  one of these isn't a bug in the tool — it's the rule catching exactly the
+  shortcut you were about to take. Fix the actual gap (go take the screenshot)
+  rather than reaching for `--force`.
