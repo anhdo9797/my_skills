@@ -1,6 +1,6 @@
 ---
 name: maestro-test-executor
-description: Execute QA test plans by generating Maestro YAML flows one test case at a time, running each immediately, reviewing UI appearance from screenshots, and producing a consolidated test report. Designed for non-technical testers — no source code reading required. Use this skill whenever the user wants to automate test cases with Maestro, convert a manual test plan into Maestro flows, run E2E tests on mobile apps, or validate app UI against Figma design screenshots. Also use it for visual/UI checking from screenshots — requests that mention design review, screenshot comparison, layout defects, text overflow, overlapping elements, clipped or truncated text, misaligned UI, "kiểm tra giao diện", "test visual", "test UI bằng ảnh chụp", "so sánh với Figma", "phát hiện lỗi hiển thị / tràn chữ / lệch layout": it captures a screenshot per screen, overlays a labeled grid, scans it cell-by-cell with vision, and auto-fails on serious defects with an annotated image marking exactly which cells are wrong. Also trigger when the user mentions Maestro flows, YAML test generation, mobile UI testing, simulator screenshots, or wants to validate app behavior against a test plan — even if they don't explicitly say "maestro-test-executor".
+description: Execute QA test plans by generating Maestro YAML flows one test case at a time, running each immediately, reviewing UI appearance from screenshots, and producing a consolidated test report. Designed for non-technical testers — no source code reading required. Use this skill whenever the user wants to automate test cases with Maestro, convert a manual test plan into Maestro flows, run E2E tests on mobile apps, or validate app UI against Figma design screenshots. Also use it for visual/UI checking from screenshots — requests that mention design review, screenshot comparison, layout defects, text overflow, overlapping elements, clipped or truncated text, misaligned UI, wrong spacing or padding vs the design, "kiểm tra giao diện", "test visual", "test UI bằng ảnh chụp", "so sánh với Figma", "spacing/padding sai so với design", "phát hiện lỗi hiển thị / tràn chữ / lệch layout": it captures a screenshot per screen, overlays a labeled grid, scans it cell-by-cell with vision, **measures** gaps, element sizes, and margins against the design in dp so a spacing deviation is reported as a number instead of an impression, and auto-fails on serious defects with an annotated image marking exactly which cells are wrong. Also trigger when the user mentions Maestro flows, YAML test generation, mobile UI testing, simulator screenshots, or wants to validate app behavior against a test plan — even if they don't explicitly say "maestro-test-executor".
 ---
 
 # Maestro Test Executor
@@ -11,7 +11,7 @@ Converts a QA test plan into executable Maestro YAML flows, runs each case immed
 
 > **Scope rule:** This skill works exclusively within the `.maestro/<app-id>/` directory of the current workspace. All flow discovery, selector learning, and YAML generation happen inside this single boundary.
 
-> **Token rule (read this first):** Large artifacts — raw view-hierarchy dumps (~250k tokens/screen), screenshots, and command logs — must never flood the main context. Route hierarchies through `scripts/filter_hierarchy.py` or a subagent, read failure screenshots only when needed, and `grep` logs instead of reading them whole. Details in `references/selectors-and-inspection.md`. **The one deliberate exception is a Tier 3 visual review**, where reading the screenshot *is* the test — even there, read only the **gridded** version, one image per screen state.
+> **Token rule (read this first):** Large artifacts — raw view-hierarchy dumps (~250k tokens/screen), screenshots, and command logs — must never flood the main context. Route hierarchies through `scripts/filter_hierarchy.py` or a subagent, read failure screenshots only when needed, and `grep` logs instead of reading them whole. Details in `references/selectors-and-inspection.md`. **The one deliberate exception is a Tier 3 visual review**, where reading the screenshot *is* the test — even there, read only the composite(s) that already contain both sides (`-grid.png`, or `-pair.png` + `-spacing.png`), one set per screen state, and read `spacing_audit.py`'s JSON before its image.
 
 > **Resume rule:** A large plan is run across **multiple sessions** (e.g. session 1 = all P0 cases, session 2 = P1, …). There is exactly **one living report** and **one YAML file per TC id** per feature — every session **updates them in place**, never replaces or re-timestamps them. On starting a session, read the existing `report.md` first to see what's already done and continue from there. The full resume/upsert model is in `references/reporting.md` — read it before Phase 4 whenever a report already exists.
 
@@ -21,7 +21,7 @@ Converts a QA test plan into executable Maestro YAML flows, runs each case immed
 - A running **emulator/simulator** or connected device
 - **Test plan** — a list of test cases from the user (or output from `qa-test-planner`)
 - **Supporting documents** (optional) — PRD, feature spec, or Figma URL to clarify expected behavior and UI
-- **Pillow** — needed for Tier 2 baseline diff and Tier 3 grid overlay (`pip3 install Pillow`, one time). Tier 1 assertion-based UI checks don't need it
+- **Pillow** — needed for Tier 2 baseline diff and Tier 3 grid overlay / design pairing / spacing measurement (`pip3 install Pillow`, one time). Tier 1 assertion-based UI checks don't need it
 
 ## Reference map
 
@@ -32,7 +32,7 @@ This SKILL.md is the orchestrator. Each phase points to a focused reference — 
 | Finding selectors cheaply, live inspection, selector catalog | `references/selectors-and-inspection.md` | You need a selector you don't already have |
 | YAML structure, templates, execution command, failure handling | `references/yaml-flows.md` | Writing or fixing flows (Phase 4) |
 | The three UI tiers, choosing between them, dynamic-UI reasoning | `references/ui-validation.md` | Validating UI appearance (Phase 5) |
-| Tier 3 visual review: grid overlay, cell-by-cell scan, severity → verdict, annotated image | `references/visual-review.md` | Judging a screen from its screenshot (Phase 5, Tier 3) |
+| Tier 3 visual review: chrome-aligned design pairing, cell-by-cell scan, severity → verdict, annotated image | `references/visual-review.md` | Judging a screen from its screenshot (Phase 5, Tier 3) |
 | Report template, resume/upsert across sessions, full screenshot paths, failed-case repro for bug logging | `references/reporting.md` | Producing/updating the report (Phase 6), or resuming a prior session |
 | Full Maestro command-to-action mapping | `references/maestro_commands.md` | Mapping a step to the right command |
 
@@ -136,7 +136,7 @@ For each in-scope TC still ⬜ PENDING:
 A 🎨 UI-validation TC runs through the **same loop**, with one extra sub-step after ③. Its YAML navigates to the screen, asserts the **Tier 1** static facts (`assertVisible`/`assertNotVisible`/property checks), and takes a screenshot into `report/screenshots/`. Those assertions are pure Maestro — they pass/fail deterministically with no Agent. Then:
 
 - **Tier 2**, if a baseline exists: run `scripts/compare_screenshots.py` against it and read the JSON verdict.
-- **Tier 3**, when this TC calls for a visual review (no baseline yet, an explicit design-QA request, or Tier 2 reported drift you need explained): grid the screenshot with `scripts/grid_overlay.py`, scan it cell by cell, and turn the findings into a verdict + an annotated image. This is the one place the loop reads a screenshot into context — that *is* the test. Read `references/visual-review.md` before doing it.
+- **Tier 3**, when this TC calls for a visual review (no baseline yet, an explicit design-QA request, or Tier 2 reported drift you need explained): with no design reference, grid the screenshot with `scripts/grid_overlay.py`. With a Figma/design image, run **both** `scripts/pair_view.py` (crops the screenshot's chrome so cell addresses actually align with the chrome-less design, then diffs pixels and flags every measurably-different cell → content/style) **and** `scripts/spacing_audit.py` (scales by width only and **measures** gaps, element heights, and margins in design px/dp → geometry). Never read spacing off `pair_view.py`: it resizes the design on both axes, so uniformly inflated padding diffs clean, and it suppresses its own flags whenever the aspect ratios differ — which is how a screen with every gap 30% too big passes a "design comparison". Scan the results cell by cell and turn the findings into a verdict + an annotated image. This is the one place the loop reads a screenshot into context — that *is* the test. Read `references/visual-review.md` before doing it.
 
 If navigation fails, the TC is already a FAIL and there's nothing to review — fix the flow first.
 
@@ -150,7 +150,7 @@ Maestro has no native "compare to Figma" or pixel-diff command, so UI validation
 |------|--------|-----------|------|
 | **1 — Assertions** (always) | Static facts you can name: titles, button labels, elements present/absent | Maestro `assertVisible`/`assertNotVisible` baked into the YAML | `ui-validation.md` |
 | **2 — Baseline diff** (optional) | Pixel *drift* from an approved capture, with chrome and dynamic regions masked | `scripts/compare_screenshots.py` — exit 0 pass / 1 drift | `ui-validation.md` |
-| **3 — Visual review** (on demand) | How the screen *looks*: clipping, overlap, truncation, misalignment, wrong state | `scripts/grid_overlay.py` + the Agent scanning the gridded image | `visual-review.md` |
+| **3 — Visual review** (on demand) | How the screen *looks*: clipping, overlap, truncation, misalignment, wrong state — plus **measured** spacing/size/margin parity vs the design | No design: `scripts/grid_overlay.py`. With a design: `scripts/pair_view.py` (chrome-aligned, diff-flagged side-by-side) **+** `scripts/spacing_audit.py` (measures gaps/heights/margins in dp) — then the Agent scans the results | `visual-review.md` |
 
 **Reach for Tier 3** when the tester asks for a visual/design QA pass, when there's no baseline yet (a first run has nothing to diff against), while authoring a UI TC (it's how you confirm the screen is actually right before encoding assertions), or when Tier 2 reports drift and someone needs to know *what* changed. Don't run it on functional TCs that already passed — a clean `assertVisible` doesn't need eyes on it, and each screenshot read costs real tokens.
 
@@ -200,6 +200,10 @@ Functional and UI-validation TCs share the single **Test Results** table (column
 | Refusing a "kiểm tra giao diện" request because there's no Figma link | Layout defects don't need a design to be wrong | Tier 3 heuristic mode — the screenshot alone catches clipping, overlap, misalignment |
 | Reading a raw screenshot for a visual review | One gestalt glance skips quiet corners; findings have no address | Grid it first, scan cell by cell, cite cells (`grid_overlay.py`) |
 | Reading both the raw and the gridded version of the same shot | Doubles the image cost for zero extra information | Read only the gridded one — it carries everything |
+| Gridding a design export and a device screenshot independently with the same `--cols/--rows` | The design has no status bar/OS nav but the screenshot does, so cell `C4` covers different content in each — the "comparison" is silently wrong | `pair_view.py` crops the screenshot's chrome bands first so cell addresses actually line up, then diffs and flags |
+| Judging design-vs-actual as two separately-read images | Diffuse, low-precision task — real differences quietly get missed, and it degrades into two independent heuristic glances instead of an actual comparison | `pair_view.py`'s one composite image + measured per-cell diff flags — account for every flagged cell first |
+| Concluding "spacing matches the design" from a clean `pair_view.py` diff | It never looked: aligning cells requires resizing the design on **both** axes, which normalizes uniformly-inflated padding away — and it suppresses its flags entirely when the aspect ratios differ. A 30%-too-loose screen passes silently | `spacing_audit.py` measures gaps/heights/margins in design px-dp (width-only scaling), and `systematic_gap_ratio` names a whole-screen deviation as one finding |
+| Reporting a spacing deviation as "looks a bit tight/loose" for a human to judge | An adjective is unactionable and unfalsifiable; it's also how a real single-token layout bug gets filed as polish and shipped | Quote the measurement — "gap 24→32 design px (+33%)" — and file a measured, out-of-tolerance deviation as **Critical**, not 🔍 REVIEW |
 | Washing cells red on a hunch ("feels tight here") | An image that highlights everything points at nothing | Highlight only cells with visible evidence; estimates stay text notes |
 | Claiming a `dp`/`sp` value from a screenshot | Vision estimates, it doesn't measure — a fabricated number destroys the report's credibility | Say "looks about half the design's gap (estimate)" and mark it 🔍 REVIEW |
 | Forcing a Minor visual finding into PASS or FAIL | PASS hides it; FAIL cries wolf and gets the whole report ignored | 🔍 REVIEW — evidence captured, human decides |
@@ -214,11 +218,13 @@ Functional and UI-validation TCs share the single **Test Results** table (column
 - `references/selectors-and-inspection.md` — finding selectors cheaply, live inspection, selector catalog, what not to read
 - `references/yaml-flows.md` — directory structure, YAML templates, execution command, failure handling, patterns
 - `references/ui-validation.md` — the three UI tiers, choosing between them, and dynamic-UI reasoning
-- `references/visual-review.md` — Tier 3: grid overlay, cell-by-cell scan, severity → verdict, annotated result image, data-vs-design rule
+- `references/visual-review.md` — Tier 3: chrome-aligned design pairing, cell-by-cell scan, severity → verdict, annotated result image, data-vs-design rule
 - `references/reporting.md` — report location, template, and the Test Results table
 - `references/maestro_commands.md` — full command-to-action mapping
 - `scripts/filter_hierarchy.py` — collapse a raw hierarchy dump into a compact selector table (~1–5k tokens instead of ~250k)
 - `scripts/compare_screenshots.py` — deterministic baseline-vs-actual visual diff with masking (Tier 2 UI regression, no Agent)
-- `scripts/grid_overlay.py` — stamp a labeled grid on a screenshot for cell-by-cell review; `--highlight` washes defect cells red for the report image (Tier 3)
+- `scripts/grid_overlay.py` — stamp a labeled grid on a screenshot for cell-by-cell review; `--highlight` washes defect cells red for the report image (Tier 3, heuristic mode and final report image)
+- `scripts/pair_view.py` — Tier 3 design mode, content/style: crops chrome so cell addresses align, diffs the design against the screenshot, and composes one side-by-side image with measurably-different cells flagged
+- `scripts/spacing_audit.py` — Tier 3 design mode, geometry: scales by width only, segments both images into element bands, and measures every gap, element height, and side margin in design px/dp, with a `systematic_gap_ratio` that names a whole-screen spacing deviation as one finding
 - [Maestro Docs](https://docs.maestro.dev/) · [Maestro MCP](https://docs.maestro.dev/get-started/maestro-mcp) · [Figma MCP](https://www.figma.com/developers/mcp)
 ```

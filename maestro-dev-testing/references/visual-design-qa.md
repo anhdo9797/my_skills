@@ -17,17 +17,30 @@ important UI is visible, interactions work, orientation changes do not break the
 and screenshots were captured from a real app/device.
 
 Maestro is not a Compose layout inspector. It cannot directly assert runtime values such
-as `fontSize = 16.sp`, `padding = 24.dp`, baseline alignment, or token bindings. Treat
-those as design-review checks unless you also inspect the source or add Compose/screenshot
-tests designed for exact layout measurement.
+as `fontSize = 16.sp`, `padding = 24.dp`, baseline alignment, or token bindings.
+
+But "Maestro can't assert `24.dp`" is not the same as "spacing can't be checked". What
+renders *is* measurable from the screenshot: `scripts/spacing_audit.py` measures the gaps
+between elements, element heights, and side margins against the design baseline in design
+px/dp, so "this gap renders at 32 where the design says 24" is a hard, quotable finding.
+What stays out of reach is the *source value* behind that render — the token, the
+`fontSize`, the baseline grid. So the split is:
+
+- **Measured from the render (objective, can FAIL a case):** gaps between elements,
+  element heights/widths, left/right margins — see `vision-ui-testing.md`.
+- **Needs source or a framework-level test (route it there):** the specific `dp`/`sp`
+  literal, token binding, line-height and baseline alignment, font family/weight.
+
+A measured render deviation is usually the fastest way to *find* a wrong token; report the
+measurement and let the developer map it to the value.
 
 Use these status meanings in reports:
 
 | Status | Meaning |
 |--------|---------|
 | PASS | Maestro assertion passed, or the vision scan found no defect and the screen matches intent/Figma within tolerance. |
-| FAIL | The app reached the target screen, but the expected UI/visual behavior was not observed — including a **Critical** vision finding (overlap, clipping, off-screen, missing element). |
-| NEEDS_REVIEW | Evidence captured and the vision scan found only **Minor** (subjective) issues, or exact font/spacing parity still needs Figma/human review. |
+| FAIL | The app reached the target screen, but the expected UI/visual behavior was not observed — including a **Critical** vision finding (overlap, clipping, off-screen, missing element) or a **measured** spacing/margin deviation outside tolerance. |
+| NEEDS_REVIEW | Evidence captured and only **Minor** issues found (subjective, or measured but small and localized), or a font/typography question that can't be measured from a screenshot still needs Figma/human review. Don't park a measured, out-of-tolerance spacing deviation here — that's a FAIL with a number. |
 | PENDING | The check could not run because the required device, app install, Figma node, or environment was missing. |
 | ERROR | The flow or environment failed before the intended check could complete. |
 
@@ -105,7 +118,9 @@ In `RUN_REPORT.md`, include:
 - Device matrix and which profiles ran.
 - Exact Maestro command.
 - Screenshot paths for each visual testcase.
-- Observations for responsive layout, font size, spacing, clipping, and alignment.
+- Observations for responsive layout, font size, spacing, clipping, and alignment. For spacing,
+  quote the measured numbers from `spacing_audit.py` (`systematic_gap_ratio` plus the offending
+  rows of the `gaps[]` table) rather than an adjective.
 - Which checks are objective PASS/FAIL and which are `NEEDS_REVIEW`.
 
 In `report.md`, keep one row per testcase/device profile. Put screenshot paths and Figma node
@@ -118,7 +133,9 @@ Recommend Compose UI tests, Paparazzi/Roborazzi-style screenshot tests, or sourc
 checks when the user needs exact automated checks for:
 
 - Typography values (`sp`, font family, weight, line height).
-- Padding/margin/size values in `dp`.
+- The `dp` **literal or token** behind a padding/margin/size — the rendered value is already
+  measured by `spacing_audit.py`; a framework test is what pins the source value so it can't
+  regress.
 - Token binding parity with the design system.
 - Stable pixel diffing across many screen sizes in CI.
 

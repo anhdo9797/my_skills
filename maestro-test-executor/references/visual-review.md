@@ -60,12 +60,12 @@ Everything stays under the feature's `report/` folder — `takeScreenshot: <bare
 .maestro/<app-id>/<feature>/report/
 ├── screenshots/   ← clean device captures from takeScreenshot
 ├── figma/         ← design references: Figma renders or tester-supplied exports
-├── grid/          ← gridded versions of the above (what vision actually reads)
+├── grid/          ← what vision actually reads: <stem>-grid.png (heuristic) or <stem>-pair.png (design mode)
 └── vision/        ← annotated result images, defect cells washed red — the deliverable
 ```
 
 Pair files by the same `TC-XXX_<state>` stem across folders so the set is obvious at a glance:
-`figma/TC-010_default.png` ↔ `screenshots/TC-010_default.png` ↔ `grid/TC-010_default-grid.png` ↔ `vision/TC-010_default-report.png`.
+`figma/TC-010_default.png` ↔ `screenshots/TC-010_default.png` ↔ `grid/TC-010_default-pair.png` ↔ `vision/TC-010_default-report.png`.
 
 ## Getting the design reference (design mode)
 
@@ -79,21 +79,34 @@ Two sources, both ending as a PNG in `report/figma/`, after which the comparison
 ## The pipeline
 
 ```text
-[design mode] design reference → grid it with the SAME --cols/--rows
+[design mode]
 Maestro drives to the screen → takeScreenshot into report/screenshots/  (clean, no grid)
-   → grid_overlay.py           → report/grid/<stem>-grid.png
-   → read the gridded image, scan cell by cell (heuristic, or vs. the gridded design)
+   → pair_view.py design.png actual.png --crop-actual-top/--bottom …
+        (crops chrome so cell addresses align, diffs pixels, flags cells over
+         threshold, composes ONE side-by-side image)  → report/grid/<stem>-pair.png
+   → spacing_audit.py design.png actual.png …
+        (scales by WIDTH only, segments both into element bands, MEASURES every
+         gap / height / margin in design px-dp)     → report/grid/<stem>-spacing.png + JSON
+   → read the spacing JSON, then the two composites: account for every flagged
+     gap, then every flagged cell, then finish the checklist scan on the rest
    → classify each finding Critical / Minor, naming the exact cell(s)
    → severity → verdict (❌ FAIL / 🔍 REVIEW / ✅ PASS)
    → if any defect: grid_overlay.py --highlight <cells> → report/vision/<stem>-report.png
    → one row in report.md + findings in UI Validation Details (+ Failed Test Details if FAIL)
+
+[heuristic mode — no design reference]
+Maestro drives to the screen → takeScreenshot → grid_overlay.py → report/grid/<stem>-grid.png
+   → read the gridded image, scan cell by cell against the checklist below
+   → same classify → verdict → highlight → report steps as above
 ```
 
 ### Step 1 — Capture a clean screenshot
 
 The TC's YAML already ends on `takeScreenshot` after the screen settles (`waitForAnimationToEnd` / `extendedWaitUntil`). Capture the exact state under test. For a long screen, take one shot per scroll position (`TC-010_top`, `TC-010_mid`, `TC-010_bottom`) — vision only sees what's in frame, so anything below the fold has to be scrolled into view by the flow.
 
-### Step 2 — Overlay the grid
+### Step 2 — Align and grid
+
+**No design reference (heuristic mode):**
 
 ```bash
 python3 scripts/grid_overlay.py report/screenshots/TC-010_default.png \
@@ -102,20 +115,71 @@ python3 scripts/grid_overlay.py report/screenshots/TC-010_default.png \
 
 Output defaults to `<name>-grid.png` next to the input if you omit `--out`. The script auto-picks ~6 columns for a phone portrait and derives rows so cells stay roughly square — square cells are what make "is this centered / aligned?" reliable. Cells are addressed spreadsheet-style: columns `A,B,C…` left→right, rows `1,2,3…` top→bottom, so `C4` is column 3, row 4.
 
-**Dependency:** Pillow. If it errors with "Pillow is required", run `pip3 install Pillow` once — a one-time setup, not a per-case cost.
-
-**Comparing to a design reference?** Grid **both** images with the **same** `--cols`/`--rows` so `C4` means the same region in both:
+**Comparing to a design reference (design mode) — use `pair_view.py`, not `grid_overlay.py` twice.** A Figma export almost never includes a real status bar or OS nav, but the device screenshot always does. Gridding the two images independently with the same `--cols/--rows` (the old approach) puts cell `C4` over *different* content in each — any comparison built on that is silently comparing the wrong regions. `pair_view.py` fixes this at the source: it crops the screenshot's chrome bands off first, so the two images' content occupies the same fractional area, *then* grids both, *then* measures a real pixel diff between them and flags every cell whose diff exceeds a threshold — so the review isn't just two independent glances, it's a guided comparison against a computed fact.
 
 ```bash
-python3 scripts/grid_overlay.py report/screenshots/TC-010_default.png --cols 6 --rows 13 --out report/grid/TC-010_default-grid.png
-python3 scripts/grid_overlay.py report/figma/TC-010_default.png       --cols 6 --rows 13 --out report/grid/TC-010_design-grid.png
+python3 scripts/pair_view.py report/figma/TC-010_default.png report/screenshots/TC-010_default.png \
+    --cols 6 --rows 13 \
+    --crop-actual-top 6% --crop-actual-bottom 4% \
+    --out report/grid/TC-010_default-pair.png
 ```
 
-The two images may differ in resolution — the grid normalizes them to the same addresses. Use `--emit-legend` only when you need the cell→pixel map (e.g. to hand a defect location to a follow-up `tapOn: point`); for a pure review the labels on the image are enough and the legend just adds JSON to stdout.
+Starting crop values (verify against the output — if content still looks offset between the two halves, adjust and regenerate before trusting any cell citation):
+
+| Chrome | `--crop-actual-top` | `--crop-actual-bottom` |
+|--------|---------------------|-------------------------|
+| iOS, notch/Dynamic Island | ~7% | ~4% |
+| iOS, home button | ~5% | ~1% |
+| Android, gesture nav | ~4% | ~3% |
+| Android, 3-button nav | ~4% | ~5% |
+
+If the design export itself includes a device mockup frame (uncommon — most Figma node exports are content-only), crop it too with `--crop-design-top`/`--crop-design-bottom`. Mask known-dynamic regions (a live photo, a list of real rows) with `--mask x1,y1,x2,y2` (percentages recommended, since they survive the resize) so they don't get flagged as "different" for containing different — expected — content.
+
+The script prints a JSON summary with every cell's measured diff ratio and which cells crossed `--cell-threshold` (default 8%). Read that JSON for the exact numbers; it's what lets a finding cite a measured percentage instead of an eyeballed guess.
+
+### Step 2b — Measure the geometry (design mode: always, not optional)
+
+`pair_view.py` answers *"is the right element here, with the right content and style?"*. It cannot answer *"is this gap 16dp like the design, or 28dp?"* — and it will not tell you it didn't try. To align cell addresses it resizes the design onto the screenshot's width **and** height; force-fitting both axes rescales the design's vertical rhythm onto the device's, so a screen whose every padding is inflated by the same factor diffs **clean**. When the two aspect ratios differ (an iOS 390×844 export vs a 1080×2424 Android screen — the normal case), it goes further and suppresses its own flags as unreliable, reporting nothing at all. A 30%-too-loose screen sails through both stages. That is the single most common design-parity defect and the easiest one to miss.
+
+So spacing is a **measurement**, and `spacing_audit.py` measures it:
+
+```bash
+python3 scripts/spacing_audit.py report/figma/TC-010_default.png report/screenshots/TC-010_default.png \
+    --crop-design-top 6% --crop-design-bottom 2% --crop-actual-top 4% \
+    --mask-actual "60%,88%,100%,100%" \
+    --out report/grid/TC-010_default-spacing.png
+```
+
+It scales by **width only** — mobile layouts pin horizontal metrics and let content flow vertically, so width is the honest shared unit, and not touching the height is what keeps vertical error in the data. It then segments both images into horizontal content bands separated by empty gaps, aligns the two band sequences (skips allowed, since real data ≠ mockup data), and reports gap by gap. Because gaps are *differences* between positions, the result is immune to a taller/shorter status bar, screen size, and pixel density.
+
+Read the JSON first:
+
+| Field | How to read it |
+|-------|----------------|
+| `verdict` | Plain-language conclusion, already phrased for the report. |
+| `systematic_gap_ratio` | Median actual/design gap ratio. `1.29` = every gap ~29% too big → **one** finding with one root cause (a wrong spacing token), not fifteen separate ones. |
+| `gaps[]` | Per-gap `design` / `actual` / `delta` / `delta_pct` / `flagged`. This is what a developer acts on. |
+| `band_heights[]` | Element heights — separates "the space around it is wrong" from "the element is the wrong size". |
+| `margin_deviations[]` | Left/right ink extent per band — catches side-padding and width bugs. |
+| `unmatched_design` / `unmatched_actual` | Bands with no counterpart, and `comparable: false` gaps. Almost always a **data** difference (empty state vs three cards) — judge from the image, never report as a spacing defect. |
+| `matched_bands` | Under 3 → `verdict` says INCONCLUSIVE. Fix the inputs before quoting anything. |
+
+When the verdict is INCONCLUSIVE or the band boxes in the PNG don't land on elements you'd name out loud, fix the inputs — in this order: crop the chrome (`--crop-design-*` too: a 390×844 iPhone frame draws its own status bar, ~6% top / ~2% bottom); `--mask-actual` a FAB or debug overlay that bridges a gap and merges two bands; `--roi-top`/`--roi-bottom` to audit only the part of the screen that has visible separation; `--design-width-dp 390` when the export isn't 1x so the report reads in real dp; `--min-gap` (default `auto`, prints `min_gap_used`) if a paragraph split per line or two sections merged. If it stays inconclusive, say so and fall back to visual review — never quote a number you don't trust.
+
+**Dependency (all three scripts):** Pillow. If it errors with "Pillow is required", run `pip3 install Pillow` once — a one-time setup, not a per-case cost.
 
 ### Step 3 — Scan cell by cell (don't glance)
 
-Read the **gridded** image and walk the checklist **region by region**, naming the cell(s) each observation falls in. Scanning by cell is the whole point — it forces coverage of the quiet corners a gestalt glance skips. Go top band → content → bottom band. In design mode, read the actual-grid and design-grid together and compare the **same cell** in each.
+**Design mode:** work from the measurements outward, in this order:
+
+0. **Settle geometry from `spacing_audit.py`'s JSON before you look at anything.** Account for every `flagged: true` gap, and check `systematic_gap_ratio` — if it's outside tolerance, the honest finding is *one* finding ("all section spacing renders N% larger than design") with the per-gap table as evidence, not nine separate gap findings for one wrong token. A clean `pair_view.py` diff is **not** evidence that spacing is fine; it never measured it. Say "content/style diff clean" and cite the spacing audit separately.
+
+Then read the **paired composite** (`report/grid/<stem>-pair.png`) — design left, actual right, same grid, amber-flagged cells on the right showing a measured diff percentage — and do two things, in order:
+
+1. **Account for every flagged cell first.** A flag is a measured fact, not a suggestion — explain what actually differs in that cell (text, layout, color, missing/extra element) and whether it's a design defect or a data-driven difference (see the table below). A flagged cell can turn out to be data-driven (excluded, not a defect) or chrome-adjacent (crop was imperfect — say so and note the correct crop for next time), but it cannot be silently skipped.
+2. **Finish the checklist scan on the rest of the grid**, flagged or not. The pixel diff is a **floor, not a ceiling** — it catches structural/positional/textual differences above the threshold, but a subtle color or font-weight difference can sit under `--cell-threshold` and never flag, so the full visual checklist below still applies everywhere.
+
+**Heuristic mode:** read the single gridded image and walk the checklist **region by region**, naming the cell(s) each observation falls in. Scanning by cell is the whole point — it forces coverage of the quiet corners a gestalt glance skips. Go top band → content → bottom band.
 
 **Heuristic checklist** (no design reference — judge the screen on its own):
 
@@ -130,6 +194,8 @@ Read the **gridded** image and walk the checklist **region by region**, naming t
 
 **Design-parity checklist** (a design reference was provided):
 
+- **Spacing, element sizes, side margins — from `spacing_audit.py`, quoted as numbers.** Every flagged gap accounted for; `systematic_gap_ratio` reported when it's outside tolerance; `band_heights` and `margin_deviations` checked. Never leave this line as an impression when a measurement exists.
+- Every **amber-flagged cell** from `pair_view.py` explained first (see Step 3) — that's the measured, can't-skip list.
 - Same elements present, in the same regions (map each design region to a cell range).
 - Text content matches — copy, casing, no untranslated keys.
 - Relative layout matches: order, grouping, alignment, proportions.
@@ -137,16 +203,18 @@ Read the **gridded** image and walk the checklist **region by region**, naming t
 - Flag anything present in the design but missing on device (and vice versa) **that is not data-driven**.
 - **Exclude data-driven differences** per the table above — don't FAIL on them.
 
-Compare **relative** layout and presence, not pixel-exact positions: device density and system chrome legitimately differ from a design frame. That's what Tier 2 is for, and even there the chrome is masked.
+Compare **relative** layout and presence, not pixel-exact positions: device density and system chrome legitimately differ from a design frame. That's what Tier 2 is for, and even there the chrome is masked. The one exception is spacing and margins, which *are* compared numerically — `spacing_audit.py` normalizes by width and compares differences between element positions, so density and chrome drop out of the arithmetic. "Gap renders 32 design px where the design says 24" is a legitimate finding; "the elements look further apart" is not.
 
 ### Step 4 — Classify each finding by severity
 
 | Severity | Definition | Examples |
 |----------|------------|----------|
-| **Critical** | Breaks usability or is unambiguously wrong; a user would report it. | A control's text fully clipped or unreadable; two interactive elements overlapping; content running off-screen; a required element missing; an untranslated key on screen; a broken image where content was expected. |
-| **Minor** | Subjective or low-impact polish; needs human judgment. | Spacing feels tight; slightly off-center; a colour shade looks a touch off vs. the design; inconsistent but legible density. |
+| **Critical** | Breaks usability, or is unambiguously wrong — including a *measured* deviation from the design. | A control's text fully clipped or unreadable; two interactive elements overlapping; content running off-screen; a required element missing; an untranslated key on screen; a broken image where content was expected; **`systematic_gap_ratio` outside tolerance** (the screen's whole vertical rhythm is wrong); **one measured gap or margin far outside tolerance** (e.g. 13 → 42 design px). |
+| **Minor** | Subjective, or measured but small and localized. | A gap 5–6 design px off in one place; slightly off-center; a colour shade a touch off vs. the design; density that reads inconsistent but legible. |
 
 If you're unsure whether something is Critical, ask: *would a normal user notice and be blocked or confused?* Yes → Critical. Merely "a designer might tweak it" → Minor. **Bias Minor when genuinely uncertain** — a false Critical erodes trust faster than a missed nitpick.
+
+**But a measured deviation isn't uncertainty.** "Spacing complaints are subjective, so file them Minor" was right only while spacing couldn't be measured. It can now, and filing a measured 29% inflation as a soft note is how a real single-root-cause layout bug ships. If the number is outside tolerance and the segmentation is sound (band boxes land on real elements, gap `comparable: true`), it's **Critical**: state the measurement, don't hedge it. Save the hedging for what genuinely is an estimate — an INCONCLUSIVE verdict, an unmatched band, a colour impression.
 
 ### Step 5 — Severity → verdict
 
@@ -182,11 +250,16 @@ Write each finding so a reviewer can locate and judge it without re-deriving con
 ```
 [Critical] C3–D3: "Monstera Deliciosa" title clipped on the right edge, last
   characters cut by the card boundary. Evidence: report/vision/TC-010_default-report.png
-[Minor]    A11–F11: bottom nav icons sit tight against the top divider; gap looks
-  about half the design's (estimate). Figma node 123:456.
+[Critical] All section gaps render ~29% larger than the design (spacing_audit
+  systematic_gap_ratio 1.29 over 5 comparable gaps): search→"Popular Plants"
+  28→36, card row→"Your Garden" 24→32, "Your Garden"→content 13→42 design px.
+  Likely one root cause — a single vertical-spacing token.
+  Evidence: report/grid/TC-010_default-spacing.png. Figma node 123:456.
+[Minor]    B2: search field renders 4 design px shorter than the design (48→44) —
+  noticeable but not a usability issue.
 ```
 
-Always include: severity, cell address(es), what's wrong, and the annotated image path (plus the Figma node id in design mode). The cell address is what makes a finding actionable — "title is clipped" is vague; "title clipped in C3–D3" points straight at it.
+Always include: severity, the location (cell address, or the band/gap id from the spacing audit), what's wrong, and the annotated image path (plus the Figma node id in design mode). The location is what makes a finding actionable — "title is clipped" is vague; "title clipped in C3–D3" points straight at it. **When a number exists, lead with the number:** the measured diff ratio from `pair_view.py` when a cell was flagged ("C3–D3 (18% pixel diff)"), and the measured px/dp from `spacing_audit.py` for anything about spacing, size, or margins. A developer can act on "gap 24→32 design px (+33%)" in one read; "spacing looks off" sends them back to measure it themselves. Reserve prose-only findings for what genuinely wasn't measured, and label those "estimate".
 
 **Critical findings feed Failed Test Details** (see `reporting.md`). Map them onto the bug fields directly so the next phase files the bug without re-investigating:
 
@@ -206,7 +279,7 @@ When a screen passes Tier 3 cleanly and the tester wants it protected in future 
 Reading a screenshot is the one place this skill deliberately spends tokens on an image — that's the test, not waste. Keep it disciplined:
 
 - Read **one gridded image per screen state**. Never read the raw *and* the gridded version of the same shot; the gridded one carries everything.
-- In design mode, read the **actual-grid and design-grid** pair — that pair *is* the comparison. Don't also read the ungridded originals.
+- In design mode, read the **`-pair.png`** and the **`-spacing.png`** composites — two images that each already contain both halves side by side. Don't also read the ungridded originals, the design on its own, or grid the two images separately. Read `spacing_audit.py`'s **JSON before its PNG**: the numbers usually settle the question, and the image is then only needed to name which band is which.
 - Add scroll-position shots (`-top/-mid/-bottom`) only when content genuinely extends beyond the fold; each is another image in context.
 - Reserve vision for 🎨 UI TCs and explicit design-QA requests. A functional TC with a clean `assertVisible` doesn't need eyes on it.
 - Skip `--emit-legend` unless you need the coordinate map.

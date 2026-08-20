@@ -140,17 +140,38 @@ Tuning: `--tolerance` is the per-channel intensity delta below which a pixel cou
 
 Tiers 1 and 2 both need something to compare against: a named fact, or an approved baseline. Tier 3 needs neither — the Agent reads the screenshot and judges the layout directly, which is the only way to catch a clipped title or two overlapping labels on a screen nobody has baselined yet.
 
-To keep that judgment systematic rather than one impressionistic glance, `scripts/grid_overlay.py` stamps a labeled grid over the screenshot first; the review then walks it cell by cell and every finding carries an address (`C3`, `A6:F8`) a reviewer can find again. Findings are classified **Critical** (a user would notice and be blocked — overlap, clipping, off-screen content, missing element) or **Minor** (subjective polish), and the severity decides the verdict: any Critical → ❌ FAIL, only Minor → 🔍 REVIEW, clean → ✅ PASS. The deliverable is an annotated image with the defective cells washed red.
+To keep that judgment systematic rather than one impressionistic glance, the screenshot is gridded first so every finding carries an address (`C3`, `A6:F8`) a reviewer can find again. There are two entry points, depending on whether a design reference exists:
+
+- **No design reference (heuristic mode):** `scripts/grid_overlay.py` grids the screenshot alone; the review walks it cell by cell against a defect checklist.
+- **A design reference exists (design mode):** run **two** scripts, because they answer two different questions and each is blind to the other's.
+  - `scripts/pair_view.py` — **content, presence, style.** It first **crops the screenshot's chrome bands** (status bar, OS nav) so its content lines up with the chrome-less design export, **then** grids both at the same coordinates, computes a real pixel diff, and composes them into one side-by-side image with every cell whose diff exceeds a threshold flagged in amber. Skip straight to `grid_overlay.py` on two independently-gridded images and cell `C4` in one is very likely a different region than `C4` in the other — the chrome heights don't match, so nothing built on that alignment is trustworthy.
+  - `scripts/spacing_audit.py` — **geometry: gaps, element heights, side margins, measured in design px/dp.** This is not optional on a spacing question, because `pair_view.py` structurally cannot answer it: to align cells it resizes the design onto the screenshot's width *and* height, which rescales the design's vertical rhythm onto the device's — so a screen whose every padding is inflated by one factor diffs **clean**, and when the aspect ratios differ (an iOS export vs an Android screen: routine) it suppresses its own flags entirely. `spacing_audit.py` scales by **width only**, segments both images into element bands, and compares gap by gap; since gaps are differences between positions, the result survives different chrome, screen size, and density.
+
+Findings are classified **Critical** (a user would notice and be blocked — overlap, clipping, off-screen content, missing element — or a *measured* deviation outside tolerance) or **Minor** (subjective, or measured but small and localized), and the severity decides the verdict: any Critical → ❌ FAIL, only Minor → 🔍 REVIEW, clean → ✅ PASS. The deliverable is an annotated image with the defective cells washed red, plus the measured numbers in the finding text.
 
 ```bash
+# Heuristic mode
 python3 scripts/grid_overlay.py report/screenshots/TC-010_default.png \
     --cols 6 --rows 13 --out report/grid/TC-010_default-grid.png
-# …scan the gridded image cell by cell, then mark only the cells with visible evidence:
+
+# Design mode, part 1 — content/style: crops chrome, aligns, diffs, and flags in one step
+python3 scripts/pair_view.py report/figma/TC-010_default.png report/screenshots/TC-010_default.png \
+    --cols 6 --rows 13 --crop-actual-top 6% --crop-actual-bottom 4% \
+    --out report/grid/TC-010_default-pair.png
+
+# Design mode, part 2 — geometry: MEASURES gaps / heights / margins in design px-dp
+python3 scripts/spacing_audit.py report/figma/TC-010_default.png report/screenshots/TC-010_default.png \
+    --crop-design-top 6% --crop-design-bottom 2% --crop-actual-top 4% \
+    --out report/grid/TC-010_default-spacing.png
+
+# …scan the gridded/paired image cell by cell (accounting for every flagged
+# cell first in design mode), then mark only the cells with visible evidence
+# on the FINAL report image — always from the plain screenshot via grid_overlay.py:
 python3 scripts/grid_overlay.py report/screenshots/TC-010_default.png \
     --cols 6 --rows 13 --highlight "E2:F3" --out report/vision/TC-010_default-report.png
 ```
 
-**Read `visual-review.md` before running a Tier 3 pass.** The full method is there, and so are the two judgment calls that decide whether the result is trustworthy: what vision can and cannot prove (it estimates, it does not measure — never claim a `dp`/`sp` value from a screenshot), and the **data-state vs. design-state** rule that stops the most common false FAIL (the app showing three items where the design shows six is *data*, not a defect).
+**Read `visual-review.md` before running a Tier 3 pass.** The full method is there, and so are the two judgment calls that decide whether the result is trustworthy: what vision can and cannot prove (vision itself estimates — so spacing/size/margin questions go to `spacing_audit.py`, which measures them, while `fontSize`/token values still can't come from a screenshot at all), and the **data-state vs. design-state** rule that stops the most common false FAIL (the app showing three items where the design shows six is *data*, not a defect).
 
 A clean Tier 3 pass is also the natural moment to **promote the screenshot to a Tier 2 baseline** — vision just confirmed it's correct, so it's a baseline you can trust. That's the intended graduation: Tier 3 finds and confirms; Tiers 1 and 2 lock it in for every future run.
 

@@ -14,9 +14,11 @@ description: >-
   UI testing — requests that mention Figma, responsive layout, font size,
   spacing, screenshot comparison, design review, "kiểm tra giao diện từng màn
   hình", "test UI bằng ảnh chụp", "phát hiện lỗi hiển thị / tràn chữ / overlap /
-  lệch layout", or "chia lưới màn hình để soi": it captures a screenshot per
-  screen, overlays a labeled grid, and uses vision to scan each screen cell-by-
-  cell, auto-failing on serious defects. This is the dev-side skill: it reads the app's source for
+  lệch layout", "spacing/padding sai so với design", or "chia lưới màn hình để
+  soi": it captures a screenshot per screen, overlays a labeled grid, uses vision
+  to scan each screen cell-by-cell, and **measures** gaps, element sizes, and
+  margins against the design in dp so a spacing/padding deviation is reported as
+  a number rather than an impression — auto-failing on serious defects. This is the dev-side skill: it reads the app's source for
   real selectors and writes a test plan first. It detects the app's build
   variant and applicationId from the project (never hardcoded), produces a
   TESTCASES.md plan, then authors and runs Maestro flows one case at a time —
@@ -53,8 +55,10 @@ Large artifacts must never flood context; they are the main cost of a run:
 - **`grep` run logs for the failing step** — don't `Read` whole `commands-*.json` files.
 - **Read failure screenshots only when the error text isn't enough.** Never read passing-case
   screenshots; save them as evidence (path only). The exception is a **vision/UI case**, where
-  reading the screenshot *is* the test — but read only the **gridded** version, one image per
-  screen state (see `references/vision-ui-testing.md`), never raw + gridded of the same shot.
+  reading the screenshot *is* the test — but read only the composite(s) that already contain both
+  sides (`-grid.png`, or `-pair.png` + `-spacing.png`), never raw + composite of the same shot.
+  Read `spacing_audit.py`'s JSON before its image; the numbers often settle the question on their
+  own (see `references/vision-ui-testing.md`).
 - Read each `references/*.md` **only when you reach the phase that needs it**, not upfront.
 
 ## Phase 0 — Detect the environment (always first)
@@ -156,9 +160,12 @@ For visual/design QA (Figma, responsive, font/spacing, "kiểm tra giao diện t
 `references/vision-ui-testing.md` (grid + vision method) and `references/visual-design-qa.md` (Figma
 baseline, device matrix) before planning. Key limit: Maestro drives the app, asserts visible
 hierarchy, sets orientation, and captures screenshots — the **vision pass** then judges layout from
-those screenshots (overlap, truncation, alignment, clipping), auto-failing on serious defects. Vision
-*estimates*; it still can't read exact `fontSize`/`dp` values, so treat exact typography/spacing as
-review checks (`NEEDS_REVIEW`) or push them to source/screenshot-diff tests.
+those screenshots (overlap, truncation, alignment, clipping), auto-failing on serious defects.
+Spacing, element size, and side margins are **measured** against the baseline by
+`scripts/spacing_audit.py` (in design px/dp) rather than eyeballed, so a padding deviation is a
+hard `FAIL` with a number attached. Font values (`fontSize`, weight, line height) still can't be
+read from a screenshot — those stay review checks (`NEEDS_REVIEW`) or move to source/screenshot-diff
+tests.
 
 ## Phase 1.5 — Investigate the flow when steps aren't obvious
 
@@ -264,23 +271,35 @@ never read passing screenshots, as they add token cost with no information gain.
 **Visual/UI cases (`VIS-*`, design-QA requests):** the look of the screen *is* the assertion, so run
 a vision pass — read `references/vision-ui-testing.md` for the full method. In short:
 
-1. Capture into `.maestro/artifacts/<feature>/actual/`, then grid it:
-   `python3 scripts/grid_overlay.py actual/<shot>.png --cols 6 --rows 13` → `grid/<shot>-grid.png`
-   (needs Pillow once: `pip3 install Pillow`).
-2. **Design mode:** the baseline is either a user-exported image or a Figma render (saved under
-   `baseline/`). Grid it with the **same** `--cols/--rows` so cells line up, then compare
-   actual-grid ↔ baseline-grid **cell-by-cell**. **Heuristic mode (no baseline):** scan the gridded
-   screenshot against the checklist on its own.
-3. Classify each finding **Critical** (breaks usability / unambiguously wrong / clear design
-   deviation) or **Minor** (subjective polish), naming the exact cell(s).
-4. Map to a verdict: any Critical → **FAIL**; only Minor → **NEEDS_REVIEW**; clean → **PASS**.
-5. **Produce the report image:** if there are defects, re-run with `--highlight "<cells>"` to wash
-   the defective cells red (~10% opacity) → `report/<shot>-report.png`. Only highlight cells with
-   clear visible evidence — never mark a cell on a vague estimate.
+1. Capture into `.maestro/artifacts/<feature>/actual/` (needs Pillow once: `pip3 install Pillow`).
+2. **Heuristic mode (no baseline):** grid the screenshot and scan it against the checklist on its
+   own — `python3 scripts/grid_overlay.py actual/<shot>.png --cols 6 --rows 13` → `grid/<shot>-grid.png`.
+3. **Design mode** (baseline = a user-exported image or a Figma render, saved under `baseline/`) —
+   run **both** scripts; they cover different questions and each is blind to the other's:
+   - `pair_view.py baseline actual --out grid/<shot>-pair.png` → content, presence, style. It
+     crops chrome and aligns both images onto one grid, flagging cells that measurably differ.
+   - `spacing_audit.py baseline actual --out grid/<shot>-spacing.png` → **geometry**: gaps,
+     element heights, side margins, measured in design px/dp. Read `systematic_gap_ratio` and the
+     `gaps[]` table from its JSON.
+
+   Never conclude "spacing matches" from a clean `pair_view.py` diff — it resizes the design on
+   both axes, which normalizes uniformly-inflated padding away, and suppresses its own flags
+   entirely when the aspect ratios differ (an iOS mockup vs an Android screen: routine). That
+   combination is exactly how a screen with every gap 30% too big passes a "design comparison".
+   Spacing is a measurement, so measure it.
+4. Classify each finding **Critical** (breaks usability / unambiguously wrong / a *measured*
+   deviation outside tolerance) or **Minor** (subjective, or measured but small and localized),
+   naming the exact cell(s) or the band/gap id.
+5. Map to a verdict: any Critical → **FAIL**; only Minor → **NEEDS_REVIEW**; clean → **PASS**.
+6. **Produce the report image:** if there are defects, re-run `grid_overlay.py` with
+   `--highlight "<cells>"` to wash the defective cells red (~10% opacity) →
+   `report/<shot>-report.png`. Only highlight cells with clear visible evidence — never mark a cell
+   on a vague estimate.
 
 This is the hybrid-by-severity policy: serious visual defects fail the case automatically; soft ones
-defer to a human. The deliverable is the annotated `report/` image plus per-cell findings recorded
-in Phase 2-D.
+defer to a human. The deliverable is the annotated `report/` image plus the `-spacing.png` and its
+measured numbers, recorded in Phase 2-D — quote the numbers in findings ("gap 24→32 design px,
++33%"), not impressions.
 
 ### 2-D: Update report immediately
 
@@ -337,12 +356,14 @@ but parity needs Figma/human comparison; `PENDING` for cases that never executed
 |------|-------|
 | Derive APP_ID + build variant / install task for any project | `references/build-variants.md` |
 | Test plan structure, scenario & cache-state types | `references/test-planning.md` |
-| Vision UI testing: grid overlay, cell-by-cell scan, severity→verdict | `references/vision-ui-testing.md` |
+| Vision UI testing: grid overlay, measured spacing audit, cell-by-cell scan, severity→verdict | `references/vision-ui-testing.md` |
 | Visual/design QA from Figma; responsive/font/spacing limits | `references/visual-design-qa.md` |
 | Recover an unknown path / selectors (reuse → source → inspect → ask) | `references/flow-investigation.md` |
 | Maestro command syntax, selectors, cache patterns | `references/maestro-commands.md` |
 | Collapse a hierarchy dump into a compact selector table (token saver) | `scripts/filter_hierarchy.py` |
 | Overlay a labeled grid / wash defect cells red for the report image | `scripts/grid_overlay.py` |
+| Design vs device: aligned side-by-side + measured per-cell diff (content, style) | `scripts/pair_view.py` |
+| Design vs device: **measure** gaps, element heights, margins in dp (spacing bugs) | `scripts/spacing_audit.py` |
 | Flow starting point | `assets/flow-template.yaml` |
 | Warm-cache shared launch subflow | `assets/launch_keep_state.yaml` |
 
@@ -360,7 +381,9 @@ Phase 2 loop — self-driving until ALL TCs have a status:
     Write <TC-ID>.yaml
     Run single flow
     Functional: check screenshot (FAIL/ambiguous only)
-    Visual (VIS-*): grid actual (+baseline, same dims) → cell-by-cell scan →
+    Visual (VIS-*): design mode → pair_view.py (content/style) + spacing_audit.py
+      (measured gaps/margins); heuristic mode → grid_overlay.py
+      → account for flagged gaps + flagged cells → cell-by-cell scan →
       severity→verdict → --highlight defect cells into report/ image
     Update report.md + RUN_REPORT.md (evidence = report image)
     Announce result inline

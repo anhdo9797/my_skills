@@ -75,6 +75,12 @@
         "Maps Critical mismatches -> FAIL and minor/subjective ones -> NEEDS_REVIEW",
         "Run outcome reported honestly (real result or honest no-device/missing-node handling)"
       ]
+    },
+    {
+      "id": 5,
+      "prompt": "Màn Home của app plant-id vừa merge, mình thấy spacing giữa các section (search bar → Popular Plants → Your Garden) trông rộng hơn thiết kế nhiều nhưng không chắc. Design export ở .maestro/artifacts/home/baseline/\"Home iOS - default.png\" (frame iPhone 390x844), screenshot chụp trên emulator Pixel 1080x2424. Kiểm tra giúp mình xem có thật là sai spacing không, sai bao nhiêu.",
+      "expected_output": "Runs spacing_audit.py on the design + screenshot pair (NOT just pair_view.py, and does not conclude 'spacing looks fine' from a clean pixel diff). Crops the chrome on both sides before measuring. Reports the deviation as numbers in design px/dp — per-gap design→actual values plus systematic_gap_ratio — and, when one ratio repeats across most gaps, reports it as a SINGLE finding with one likely root cause (a wrong vertical spacing token) rather than one finding per gap. Files an out-of-tolerance measured deviation as Critical → FAIL, not NEEDS_REVIEW, and keeps data-state differences (empty state vs populated cards) out of the spacing verdict. Vietnamese prose, English identifiers.",
+      "files": []
     }
   ]
 }

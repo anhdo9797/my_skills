@@ -41,6 +41,8 @@ mindmap
       filter_hierarchy.py
       compare_screenshots.py
       grid_overlay.py
+      pair_view.py
+      spacing_audit.py
 ```
 
 ---
@@ -179,18 +181,28 @@ flowchart LR
 
 ```mermaid
 flowchart TD
-    S(["report/screenshots/TC-XXX_state.png"]) --> G["grid_overlay.py --cols 6 --rows 13\n→ report/grid/TC-XXX_state-grid.png"]
-    D(["report/figma/TC-XXX_state.png\n(design mode only)"]) -.->|"SAME --cols/--rows"| GD["→ report/grid/TC-XXX_design-grid.png"]
+    S(["report/screenshots/TC-XXX_state.png"]) --> MODE{Design reference\navailable?}
 
-    G --> SCAN["🔍 Scan cell by cell\n(heuristic checklist, or\nsame-cell vs. design-grid)"]
-    GD -.-> SCAN
+    MODE -- "No (heuristic)" --> G["grid_overlay.py --cols 6 --rows 13\n→ report/grid/TC-XXX_state-grid.png"]
+    G --> SCAN["🔍 Scan cell by cell\n(heuristic checklist)"]
+
+    MODE -- "Yes (design mode)" --> PV["pair_view.py design.png actual.png\n--crop-actual-top/--bottom (strips chrome\nso cell addresses ACTUALLY align)\n→ diffs pixels → flags cells over threshold\n→ ONE side-by-side composite\n= CONTENT / PRESENCE / STYLE"]
+    MODE -- "Yes (design mode)" --> SA["spacing_audit.py design.png actual.png\nscales by WIDTH ONLY (vertical error survives)\n→ segments both into element bands\n→ MEASURES every gap / height / margin in design px-dp\n= GEOMETRY"]
+    D(["report/figma/TC-XXX_state.png"]) -.-> PV
+    D -.-> SA
+    PV --> PAIR["→ report/grid/TC-XXX_state-pair.png"]
+    SA --> SPC["→ report/grid/TC-XXX_state-spacing.png\n+ JSON: systematic_gap_ratio, gaps[],\nband_heights[], margin_deviations[]"]
+    SPC --> SCAN0["📏 Account for every flagged GAP first\n+ check systematic_gap_ratio\n(one ratio across most gaps = ONE finding)"]
+    PAIR --> SCAN2["🔍 Account for every flagged cell first\n(measured, can't skip)\n→ finish checklist scan on the rest"]
 
     SCAN --> EXCL{"Difference is\ndata-driven?\n(item count, names,\nphotos, badges)"}
+    SCAN2 --> EXCL
+    SCAN0 --> EXCL
     EXCL -- Yes --> NOTE["Exclude + note it\n(NOT a defect)"]
     EXCL -- No --> SEV{Severity?}
 
-    SEV -- "Critical\n(clipped, overlap,\noff-screen, missing)" --> CR["❌ TC FAIL\n+ Failed Test Details entry"]
-    SEV -- "Minor\n(spacing, slight off-center,\nshade — subjective)" --> MI["🔍 TC REVIEW\n(human decides)"]
+    SEV -- "Critical\n(clipped, overlap, off-screen,\nmissing — or a MEASURED\ndeviation out of tolerance)" --> CR["❌ TC FAIL\n+ Failed Test Details entry"]
+    SEV -- "Minor\n(slight off-center, shade,\nor measured but small\nand localized)" --> MI["🔍 TC REVIEW\n(human decides)"]
     SEV -- "No findings" --> OK["✅ TC PASS\n→ promote to Tier 2 baseline"]
 
     CR --> HL["grid_overlay.py --highlight 'C3:D3'\n→ report/vision/TC-XXX_state-report.png"]
@@ -205,9 +217,21 @@ flowchart TD
     style NOTE fill:#868E96,color:#fff
     style SEV fill:#1C2333,color:#fff
     style EXCL fill:#1C2333,color:#fff
+    style PV fill:#7950F2,color:#fff
+    style SCAN2 fill:#7950F2,color:#fff
+    style SA fill:#1971C2,color:#fff
+    style SPC fill:#1971C2,color:#fff
+    style SCAN0 fill:#1971C2,color:#fff
+    style MODE fill:#1C2333,color:#fff
 ```
 
-> **Two rules keep Tier 3 trustworthy.** *Vision estimates, it does not measure* — never claim a `dp`/`sp` value from a screenshot; that's a 🔍 REVIEW note. And *data state is not design state* — the app showing 3 items where the design shows 6 is the user's data, not a defect. Bias **Minor** when uncertain: a false Critical erodes trust faster than a missed nitpick.
+> **Four rules keep Tier 3 trustworthy.**
+> 1. *Cell addresses must actually align.* A chrome-less design export gridded independently from a real device screenshot puts the same cell id over different content in each, so design mode always crops the screenshot's chrome first (`pair_view.py`) before comparing.
+> 2. *Measure the geometry; never read spacing off the pixel diff.* `pair_view.py` resizes the design onto the screenshot's width **and** height to align cells — which rescales the design's vertical rhythm onto the device's, so uniformly inflated padding diffs clean, and when the aspect ratios differ it suppresses its own flags entirely. A screen with every gap 30% too big passes both stages. `spacing_audit.py` scales by width only and measures gaps/heights/margins in design px-dp; a `systematic_gap_ratio` outside tolerance is **one** Critical finding with one root cause, not fifteen.
+> 3. *Vision estimates; a script measures.* Never claim a `dp` value by looking — but do quote the one `spacing_audit.py` measured. What still can't come from a screenshot at all is a `fontSize`/token *value*; that's a 🔍 REVIEW note.
+> 4. *Data state is not design state.* The app showing 3 items where the design shows 6 is the user's data, not a defect — in the spacing table these surface as `unmatched_*` bands and `comparable: false` gaps, and they stay out of the spacing verdict.
+>
+> Bias **Minor** when genuinely uncertain: a false Critical erodes trust faster than a missed nitpick. But a measurement outside tolerance isn't uncertainty — don't soften it into 🔍 REVIEW.
 
 ---
 
@@ -295,7 +319,7 @@ mindmap
           TC-010.png
           TC-010.masks.json
         diff/ [heatmaps on Tier 2 failure]
-        grid/ [gridded images - what Tier 3 vision reads]
+        grid/ [what Tier 3 vision reads: -grid.png (heuristic) or -pair.png (design mode)]
         vision/ [Tier 3 annotated results - defect cells washed red]
         YYYY-MM-DD_HHmm/ [maestro --test-output-dir logs, one dir per run]
 ```
@@ -380,7 +404,9 @@ flowchart TD
 | Find the right Maestro command | `references/maestro_commands.md` |
 | Compress a hierarchy dump | `scripts/filter_hierarchy.py` |
 | Run a visual baseline diff (Tier 2) | `scripts/compare_screenshots.py` |
-| Grid a screenshot / mark defect cells red (Tier 3) | `scripts/grid_overlay.py` |
+| Grid a screenshot / mark defect cells red (Tier 3, heuristic + final report image) | `scripts/grid_overlay.py` |
+| Chrome-align + diff a design vs. a screenshot into one composite (Tier 3, design mode) | `scripts/pair_view.py` |
+| **Measure** gaps / element heights / side margins vs. a design, in design px-dp (Tier 3, design mode) | `scripts/spacing_audit.py` |
 
 ---
 
@@ -398,6 +424,10 @@ flowchart TD
 | Skip a "kiểm tra giao diện" request for lack of a Figma link | Tier 3 heuristic mode — the screenshot alone catches clipping / overlap |
 | Read a raw screenshot for a visual review | Grid it first, scan cell by cell, cite cell addresses |
 | Read raw + gridded version of the same shot | Only the gridded one — it carries everything |
+| Grid design + screenshot independently with the same cols/rows | Cell ids don't align (design has no chrome, screenshot does) — `pair_view.py` crops chrome first, then grids + diffs both |
+| Judge design-vs-actual as two separately-read images | Diffuse comparison misses real diffs — read `pair_view.py`'s one composite, account for every flagged cell |
+| Conclude "spacing matches" from a clean `pair_view.py` diff | It never looked — aligning cells needs a resize on both axes, which normalizes inflated padding away, and its flags self-suppress when the aspect ratios differ. Run `spacing_audit.py` |
+| Report a spacing deviation as "looks tight/loose" for a human to judge | Unactionable, and it files a real single-token layout bug as polish. Quote the measurement ("gap 24→32 design px, +33%") and treat out-of-tolerance as Critical |
 | Wash cells red on a hunch | Highlight only visible evidence; estimates stay text notes |
 | Claim `24dp` / `16sp` from a screenshot | Vision estimates, never measures → 🔍 REVIEW |
 | Force a Minor visual finding into PASS or FAIL | 🔍 REVIEW — evidence captured, human decides |

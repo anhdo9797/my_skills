@@ -21,10 +21,17 @@ Usage:
   python3 grid_overlay.py SHOT.png --cols 6 --rows 12 # fully explicit
   python3 grid_overlay.py SHOT.png --out SHOT-grid.png --emit-legend
 
-To compare against a design baseline, grid BOTH images with the SAME
---cols/--rows so their cells line up (e.g. `--cols 6 --rows 13` on both).
+Comparing against a design reference (Figma export, etc.)? Don't grid both
+images independently here — a design export usually has no status bar/OS nav
+while a real screenshot does, so the same --cols/--rows puts a cell over
+different content in each image. Use `pair_view.py` instead: it crops the
+screenshot's chrome bands first so cells actually align, then grids and diffs
+both images into one side-by-side composite. And for spacing/size/margin
+parity specifically, use `spacing_audit.py` — a grid can show you WHERE to look
+but cannot tell you a gap renders at 32 design px where the design says 24.
 
-To produce the annotated result image, wash the defective cells red (default
+To produce the annotated result image (from the plain, ungridded screenshot —
+used for both heuristic and design mode), wash the defective cells red (default
 10% opacity) — only the cells you pass, never a cell without clear evidence:
   python3 grid_overlay.py SHOT.png --highlight "E2,F3,A6:C8" \
       --out VIS-01-report.png
