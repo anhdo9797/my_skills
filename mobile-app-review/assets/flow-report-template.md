@@ -25,7 +25,22 @@ what do you get out, and why would someone do this?
   [Scan](../../report/home/scan_plant/README.md) →
   [Result](../../report/home/scan_plant/result/README.md)
 
-## 3. Happy path, step by step
+## 3. The flow as a diagram
+
+Generated from the transitions you recorded — don't hand-edit inside the markers:
+
+```
+changelock.py render-diagram --root <root> --scope flow --flow <flow-id> \
+  --inject flows/<flow-id>/README.md
+```
+
+<!-- flow-diagram:flow-<flow-id> -->
+<!-- /flow-diagram:flow-<flow-id> -->
+
+Thick arrows are the happy path, dashed ones were not traversed. Protocol and
+accuracy checklist: `references/user-flow-diagrams.md`.
+
+## 4. Happy path, step by step
 
 Numbered steps, each with what you did, what happened, how long it took, and the
 screenshot that proves it. This is the heart of the document — spend words here.
@@ -40,7 +55,7 @@ screenshot that proves it. This is the heart of the document — spend words her
    - Three care tips, each expandable
    ![](../../screenshots/flows/<flow-id>/03-result.png)
 
-## 4. Data lifecycle
+## 5. Data lifecycle
 
 | Stage | What happens | Evidence |
 |---|---|---|
@@ -52,7 +67,7 @@ screenshot that proves it. This is the heart of the document — spend words her
 | Ownership | Stored locally; no login required to view. Migration on login *not tested* | — |
 | Deletion | Swipe-left on a History row deletes; the Profile counter does **not** decrease | `06-delete.png` |
 
-## 5. Case matrix
+## 6. Case matrix
 
 | # | Case | Kind | Input | Expected | Observed | Evidence | Verdict |
 |---|------|------|-------|----------|----------|----------|---------|
@@ -66,19 +81,19 @@ Kinds: `happy` · `variant` · `error` · `boundary` · `abuse` · `state`.
 Verdicts: ✅ works as expected · ⚠️ works but notable · ❌ broken or wrong ·
 `not tested`.
 
-## 6. Gates and limits inside this flow
+## 7. Gates and limits inside this flow
 
 Free quota and how it's communicated, where exactly the paywall fires, what
 requires login, anything that requires a permission. Link to
 [monetization](../../analysis/monetization.md) rather than duplicating prices.
 
-## 7. Findings
+## 8. Findings
 
 Bugs, inconsistencies, and surprises — with the exact repro steps. Separate what
 you observed from what you conclude. Be concrete: "the same photo returns different
 confidence values on repeat scans" beats "the AI seems unreliable".
 
-## 8. Not tested / blocked
+## 9. Not tested / blocked
 
 Cases you planned but couldn't run, what you attempted, and what would unblock
-them. An honest gap here is worth more than a confident guess in section 5.
+them. An honest gap here is worth more than a confident guess in section 6.

@@ -27,6 +27,11 @@ Usage:
         --report report/home/README.md --screenshot screenshots/home/01-initial.png
     python3 changelock.py add-finding --root ... --type ad --screen home \\
         --summary "Bottom banner, always visible"
+    python3 changelock.py add-edge --root ... --from home --to home/scan_plant \\
+        --trigger "tap `Scan`" --kind tap --spine --flow scan-plant \\
+        --evidence screenshots/flows/scan-plant/01-camera.png
+    python3 changelock.py render-diagram --root ... --scope app \\
+        --inject analysis/ux-flows.md
     python3 changelock.py render-index --root reviews/plantid/android
 """
 
@@ -39,7 +44,7 @@ import sys
 from datetime import datetime, timezone
 from typing import Any
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 FILENAME = "changelock.json"
 
 PHASES = ["research", "install", "overview", "core-flow", "explore", "synthesize",
@@ -49,6 +54,15 @@ FLOW_STATUSES = ["planned", "in_progress", "done", "blocked"]
 FLOW_KINDS = ["core", "secondary"]
 CASE_KINDS = ["happy", "variant", "error", "boundary", "abuse", "state"]
 FINDING_TYPES = ["ad", "paywall", "iap", "crash", "blocker", "bug", "data", "note"]
+
+# Graph vocabulary for the user-flow diagrams. Node kinds map to Mermaid shapes so
+# a reader can tell a screen from a server round-trip at a glance; edge kinds and
+# statuses map to arrow styles so an untested transition can never look observed.
+NODE_KINDS = ["screen", "modal", "input", "system", "decision", "gate", "store",
+              "terminal", "external"]
+EDGE_KINDS = ["tap", "swipe", "input", "auto", "back", "deeplink", "system"]
+EDGE_STATUSES = ["observed", "inferred", "blocked"]
+DIAGRAM_SCOPES = ["app", "flow", "journey"]
 
 SUBDIRS = ["00-overview", "flows", "report", "screenshots", "analysis"]
 
@@ -87,6 +101,8 @@ def load(root: str) -> dict[str, Any]:
     with open(path, encoding="utf-8") as fh:
         data = json.load(fh)
     data.setdefault("flows", {})
+    data.setdefault("nodes", {})
+    data.setdefault("edges", [])
     return data
 
 
@@ -137,6 +153,8 @@ def cmd_init(args: argparse.Namespace) -> None:
         "phase": args.phase,
         "flows": {},
         "screens": {},
+        "nodes": {},
+        "edges": [],
         "queue": [],
         "findings": [],
     }
@@ -206,6 +224,23 @@ def cmd_status(args: argparse.Namespace) -> None:
               + (f"  (+{len(data['queue']) - 5} more)" if len(data["queue"]) > 5 else ""))
     else:
         print("\nqueue is empty.")
+
+    edges = data.get("edges", [])
+    if edges:
+        obs = sum(1 for e in edges if e.get("status") == "observed")
+        spine = sum(1 for e in edges if e.get("spine"))
+        no_ev = sum(1 for e in edges
+                    if e.get("status") == "observed" and not e.get("evidence"))
+        nodes = {e.get("from") for e in edges} | {e.get("to") for e in edges}
+        print()
+        print(f"flow graph: {len(edges)} edges ({obs} observed, {spine} on a happy-path"
+              f" spine) over {len(nodes)} nodes")
+        if no_ev:
+            print(f"  ! {no_ev} observed edge(s) have no evidence screenshot")
+    else:
+        print()
+        print("flow graph: empty — record transitions with `add-edge` as you explore,"
+              " or the user-flow diagram will have to be drawn from memory.")
 
     if data["findings"]:
         print()
@@ -436,6 +471,346 @@ def cmd_bump_session(args: argparse.Namespace) -> None:
     print(f"session #{data['session']['session_count']}")
 
 
+# ------------------------------------------------------------------- flow graph
+
+
+def cmd_add_node(args: argparse.Namespace) -> None:
+    """Declare a non-screen node for the user-flow diagram.
+
+    Screens already in the changelock are diagram nodes for free. This command is
+    for the parts of a flow that are not screens and would otherwise get flattened
+    into one: a server round-trip, a paywall gate, a permission dialog, a decision
+    the app makes on your behalf. Keeping them as distinct nodes is what turns a
+    sitemap into a flow.
+    """
+    data = load(args.root)
+    if args.id in data["screens"]:
+        sys.exit(f"'{args.id}' is already a screen; screens are nodes automatically.")
+    if args.id in data["nodes"] and not args.force:
+        print(f"Node '{args.id}' already declared as {data['nodes'][args.id]['kind']}."
+              " Use --force to change it.")
+        return
+    data["nodes"][args.id] = {
+        "title": args.title or args.id.split("/")[-1],
+        "kind": args.kind,
+        "note": args.note,
+        "evidence": args.evidence or [],
+        "created_at": now(),
+    }
+    save(args.root, data)
+    print(f"Declared {args.kind} node '{args.id}' — {data['nodes'][args.id]['title']}")
+
+
+def edge_key(edge: dict[str, Any]) -> tuple[str, str, str]:
+    """Identity of an edge: the pair it connects plus the trigger that fires it."""
+    return (edge.get("from", ""), edge.get("to", ""), edge.get("trigger", ""))
+
+
+def cmd_add_edge(args: argparse.Namespace) -> None:
+    """Record one transition you actually watched happen.
+
+    Do this as you go, while the screenshot is still in front of you — the diagram
+    is generated from these edges, so an edge you never recorded is a line you will
+    later be tempted to draw from memory, which is exactly the guesswork the
+    evidence rules exist to prevent.
+    """
+    data = load(args.root)
+    known = set(data["screens"]) | set(data["nodes"])
+    for side, nid in (("--from", args.source), ("--to", args.target)):
+        if nid not in known:
+            print(f"note: {side} '{nid}' is not a known screen or node yet."
+                  " Add it with `add-screen`/`add-node` so the diagram can label it.")
+
+    edge = {
+        "from": args.source,
+        "to": args.target,
+        "trigger": args.trigger,
+        "kind": args.kind,
+        "status": args.status,
+        "spine": bool(args.spine),
+        "flow": args.flow,
+        "cost": args.cost,
+        "condition": args.condition,
+        "evidence": args.evidence or [],
+        "tags": args.tag or [],
+        "note": args.note,
+        "recorded_at": now(),
+    }
+    if args.status == "observed" and not edge["evidence"]:
+        print("warning: an observed edge with no --evidence cannot be audited."
+              " Attach the screenshot that shows the destination.")
+    for existing in data["edges"]:
+        if edge_key(existing) == edge_key(edge):
+            existing.update(edge)
+            save(args.root, data)
+            print(f"Updated edge {args.source} -> {args.target} ({args.status})")
+            return
+    data["edges"].append(edge)
+    save(args.root, data)
+    print(f"Recorded edge {args.source} -> {args.target}"
+          f" via {args.kind} '{args.trigger}' ({args.status})"
+          f"  [{len(data['edges'])} edges total]")
+
+
+def mm_id(nid: str) -> str:
+    """Turn a screen/node id into a Mermaid-safe identifier."""
+    safe = "".join(ch if ch.isalnum() else "_" for ch in nid)
+    return "n_" + safe.strip("_").lower()
+
+
+def mm_label(text: str) -> str:
+    """Quote a label so Mermaid renders punctuation instead of choking on it."""
+    clean = (text or "?").replace('"', "&quot;").replace("\n", "<br/>")
+    if clean.startswith("`"):
+        # `"`x`"` is Mermaid's markdown-string syntax; a trigger that starts with a
+        # quoted UI label would be parsed as markup instead of shown to the reader.
+        clean = "&#96;" + clean[1:]
+    return f'"{clean}"'
+
+
+NODE_SHAPE = {
+    "screen": '{id}[{label}]',
+    "modal": '{id}({label})',
+    "input": '{id}[/{label}/]',
+    "system": '{id}[[{label}]]',
+    "decision": '{id}{{{label}}}',
+    "gate": '{id}{{{{{label}}}}}',
+    "store": '{id}[({label})]',
+    "terminal": '{id}([{label}])',
+    "external": '{id}[/{label}\\]',
+}
+
+CLASS_DEFS = [
+    "classDef screen fill:#eaf1fc,stroke:#3f6fbf,color:#10233d",
+    "classDef modal fill:#f3f0fb,stroke:#7a5fc0,color:#22133d",
+    "classDef input fill:#eef8ef,stroke:#4a9e5c,color:#123320",
+    "classDef system fill:#f0f0f0,stroke:#7d7d7d,color:#1f1f1f",
+    "classDef decision fill:#fdf6e3,stroke:#b79a35,color:#3a2f0b",
+    "classDef gate fill:#fdeee0,stroke:#d8842d,color:#3f2610",
+    "classDef store fill:#e6f6f0,stroke:#2f9c7a,color:#0d3329",
+    "classDef terminal fill:#eeeeee,stroke:#555555,color:#1a1a1a",
+    "classDef external fill:#f9ecf3,stroke:#b8508a,color:#3d1029",
+    "classDef blocked fill:#fdecec,stroke:#c8524f,color:#3d1111,stroke-dasharray: 5 3",
+]
+
+
+def node_meta(data: dict[str, Any], nid: str) -> tuple[str, str, bool]:
+    """Return (title, kind, is_known) for a diagram node."""
+    if nid in data["nodes"]:
+        node = data["nodes"][nid]
+        return node.get("title") or nid, node.get("kind", "screen"), True
+    if nid in data["screens"]:
+        scr = data["screens"][nid]
+        return scr.get("title") or nid.split("/")[-1], "screen", True
+    return nid.split("/")[-1], "screen", False
+
+
+def node_class(data: dict[str, Any], nid: str, kind: str) -> str:
+    """Blocked screens get the blocked style so an unreached node never looks visited."""
+    if nid in data["screens"] and data["screens"][nid].get("status") == "blocked":
+        return "blocked"
+    return kind
+
+
+def edge_arrow(edge: dict[str, Any]) -> str:
+    """Arrow style carries the epistemic status: thick spine, solid seen, dotted not."""
+    if edge.get("status") in ("inferred", "blocked"):
+        return "-.->"
+    if edge.get("spine"):
+        return "==>"
+    return "-->"
+
+
+def edge_text(edge: dict[str, Any]) -> str:
+    """Build the edge label: the literal trigger, plus condition, cost and caveat."""
+    parts = []
+    trigger = edge.get("trigger") or edge.get("kind") or ""
+    if edge.get("kind") == "auto" and trigger and not trigger.lower().startswith("auto"):
+        trigger = f"auto: {trigger}"
+    if edge.get("kind") == "back" and trigger and not trigger.lower().startswith("back"):
+        trigger = f"back: {trigger}"
+    if trigger:
+        parts.append(trigger)
+    if edge.get("condition"):
+        parts.append(f"[{edge['condition']}]")
+    if edge.get("cost"):
+        parts.append(edge["cost"])
+    if edge.get("status") == "inferred":
+        parts.append("(inferred, not tested)")
+    elif edge.get("status") == "blocked":
+        parts.append("(blocked)")
+    return " · ".join(parts) or "?"
+
+
+def select_edges(data: dict[str, Any], args: argparse.Namespace) -> list[dict[str, Any]]:
+    """Pick the edges belonging to the requested diagram scope."""
+    edges = data["edges"]
+    if args.scope == "flow":
+        if not args.flow:
+            sys.exit("--scope flow needs --flow <flow-id>")
+        edges = [e for e in edges if e.get("flow") == args.flow]
+    elif args.scope == "journey":
+        tagged = [e for e in edges if "journey" in (e.get("tags") or [])]
+        edges = tagged or [e for e in edges if e.get("spine")]
+        if not tagged and edges:
+            print("note: no edges tagged `journey`; falling back to the spine edges."
+                  " Tag the first-run path with `--tag journey` for a truer journey.",
+                  file=sys.stderr)
+    if args.tag:
+        edges = [e for e in edges if set(args.tag) & set(e.get("tags") or [])]
+    if args.observed_only:
+        edges = [e for e in edges if e.get("status") == "observed"]
+    if args.no_back:
+        edges = [e for e in edges if e.get("kind") != "back"]
+    return edges
+
+
+def lint_diagram(data: dict[str, Any], edges: list[dict[str, Any]]) -> list[str]:
+    """Report what would make the diagram misleading, so it can be fixed first."""
+    warnings: list[str] = []
+    known = set(data["screens"]) | set(data["nodes"])
+    seen_keys: set[tuple[str, str, str]] = set()
+    targets = {e.get("to") for e in edges}
+    sources = {e.get("from") for e in edges}
+    for e in edges:
+        label = f"{e.get('from')} -> {e.get('to')}"
+        for nid in (e.get("from"), e.get("to")):
+            if nid not in known:
+                warnings.append(f"{label}: node `{nid}` is not a known screen or node"
+                                " — it will render with a guessed label")
+        if e.get("status") == "observed" and not e.get("evidence"):
+            warnings.append(f"{label}: observed but has no evidence screenshot")
+        key = edge_key(e)
+        if key in seen_keys:
+            warnings.append(f"{label}: duplicate edge for the same trigger")
+        seen_keys.add(key)
+    for nid in sorted(sources | targets):
+        _, kind, _ = node_meta(data, nid)
+        explored = data["screens"].get(nid, {}).get("status") == "done"
+        if nid not in targets and kind not in ("terminal", "external"):
+            warnings.append(f"`{nid}` has no incoming edge — how does a user get there?")
+        # A dead end only counts as suspicious once you have been through the node: a
+        # still-queued screen has no outgoing edge because nobody has opened it yet.
+        dead_end_matters = kind in ("decision", "system", "gate") or explored
+        if nid not in sources and dead_end_matters and kind not in ("terminal", "store"):
+            warnings.append(f"`{nid}` has no outgoing edge — is that a real dead end,"
+                            " or an untested next step?")
+    documented = {sid for sid, s in data["screens"].items() if s.get("status") == "done"}
+    missing = sorted(documented - (sources | targets))
+    if missing:
+        warnings.append("documented screens absent from this diagram: "
+                        + ", ".join(f"`{m}`" for m in missing))
+    return warnings
+
+
+def render_diagram(data: dict[str, Any], edges: list[dict[str, Any]],
+                   args: argparse.Namespace) -> str:
+    """Emit the Mermaid block (plus its evidence table) for the selected edges."""
+    order: list[str] = []
+    for e in edges:
+        for nid in (e.get("from"), e.get("to")):
+            if nid and nid not in order:
+                order.append(nid)
+
+    direction = args.direction or ("LR" if args.scope == "app" else "TD")
+    lines = [f"flowchart {direction}"]
+    by_class: dict[str, list[str]] = {}
+    for nid in order:
+        title, kind, _ = node_meta(data, nid)
+        shape = NODE_SHAPE.get(kind, NODE_SHAPE["screen"])
+        lines.append("    " + shape.format(id=mm_id(nid), label=mm_label(title)))
+        by_class.setdefault(node_class(data, nid, kind), []).append(mm_id(nid))
+    lines.append("")
+    for e in edges:
+        lines.append(f"    {mm_id(e['from'])} {edge_arrow(e)}"
+                     f"|{mm_label(edge_text(e))}| {mm_id(e['to'])}")
+    lines.append("")
+    used = {c for c in by_class}
+    lines += ["    " + cd for cd in CLASS_DEFS if cd.split()[1] in used]
+    for cls, ids in by_class.items():
+        lines.append(f"    class {','.join(ids)} {cls};")
+
+    out = ["```mermaid", *lines, "```", ""]
+    if not args.no_evidence:
+        out += ["| # | Transition | Trigger | Status | Evidence |",
+                "|---|---|---|---|---|"]
+        for i, e in enumerate(edges, 1):
+            title_from, _, _ = node_meta(data, e["from"])
+            title_to, _, _ = node_meta(data, e["to"])
+            ev = ", ".join(f"`{p}`" for p in e.get("evidence") or []) or "—"
+            out.append(f"| {i} | {title_from} → {title_to} | {edge_text(e)} |"
+                       f" {e.get('status')} | {ev} |")
+        out.append("")
+    return "\n".join(out)
+
+
+def inject_block(path: str, marker: str, block: str) -> str:
+    """Replace the marked region of a report with a freshly generated diagram.
+
+    Regenerating in place matters because the prose around a diagram is written by
+    hand and must survive the next render — otherwise nobody re-renders and the
+    diagram drifts away from the graph it is supposed to summarise.
+    """
+    start, end = f"<!-- flow-diagram:{marker} -->", f"<!-- /flow-diagram:{marker} -->"
+    body = ""
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as fh:
+            body = fh.read()
+    replacement = f"{start}\n{block}{end}\n"
+    if start in body and end in body:
+        head, rest = body.split(start, 1)
+        _, tail = rest.split(end, 1)
+        body = head + replacement + tail
+        action = "updated"
+    else:
+        if body and not body.endswith("\n"):
+            body += "\n"
+        body += ("\n" if body else "") + replacement
+        action = "appended"
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(body)
+    return action
+
+
+def cmd_render_diagram(args: argparse.Namespace) -> None:
+    """Generate a user-flow diagram from the recorded graph."""
+    data = load(args.root)
+    edges = select_edges(data, args)
+    if not edges:
+        sys.exit("No edges match this scope. Record transitions with `add-edge`"
+                 " while you explore — the diagram is generated, not drawn.")
+    block = render_diagram(data, edges, args)
+    marker = f"flow-{args.flow}" if args.scope == "flow" else args.scope
+
+    if args.inject:
+        target = args.inject if os.path.isabs(args.inject) \
+            else os.path.join(args.root, args.inject)
+        action = inject_block(target, marker, block)
+        print(f"{action.capitalize()} <!-- flow-diagram:{marker} --> in {target}"
+              f" ({len(edges)} edges)")
+    elif args.out:
+        target = args.out if os.path.isabs(args.out) else os.path.join(args.root, args.out)
+        os.makedirs(os.path.dirname(target) or ".", exist_ok=True)
+        with open(target, "w", encoding="utf-8") as fh:
+            fh.write(block)
+        print(f"Wrote {target} ({len(edges)} edges)")
+    else:
+        print(block)
+
+    warnings = lint_diagram(data, edges)
+    if warnings:
+        print(f"\n{len(warnings)} thing(s) to check before publishing this diagram:",
+              file=sys.stderr)
+        for w in warnings:
+            print(f"  - {w}", file=sys.stderr)
+        if args.strict:
+            sys.exit(1)
+    else:
+        print("\nlint: clean — every edge has evidence and every node is reachable.",
+              file=sys.stderr)
+
+
 def cmd_render_index(args: argparse.Namespace) -> None:
     """Regenerate README.md from the changelock."""
     data = load(args.root)
@@ -485,7 +860,7 @@ def cmd_render_index(args: argparse.Namespace) -> None:
     for name, label in [
         ("feature-map.md", "Feature map"),
         ("monetization.md", "Monetization"),
-        ("ux-flows.md", "UX flows"),
+        ("ux-flows.md", "User flow (diagrams)"),
         ("data-and-limits.md", "Data and limits"),
     ]:
         if os.path.exists(os.path.join(args.root, "analysis", name)):
@@ -603,6 +978,53 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--route", default=None)
     sp.add_argument("--note", default=None)
     sp.set_defaults(func=cmd_update_screen)
+
+    sp = with_root(sub.add_parser("add-node",
+                                  help="Declare a non-screen diagram node"))
+    sp.add_argument("--id", required=True,
+                    help="Node id, e.g. scan/analyzing or gate/quota")
+    sp.add_argument("--kind", required=True, choices=NODE_KINDS)
+    sp.add_argument("--title", default=None)
+    sp.add_argument("--evidence", action="append", help="Screenshot path; repeatable")
+    sp.add_argument("--note", default=None)
+    sp.add_argument("--force", action="store_true")
+    sp.set_defaults(func=cmd_add_node)
+
+    sp = with_root(sub.add_parser("add-edge",
+                                 help="Record an observed transition between nodes"))
+    sp.add_argument("--from", dest="source", required=True)
+    sp.add_argument("--to", dest="target", required=True)
+    sp.add_argument("--trigger", required=True,
+                    help="The literal control or gesture, e.g. \"tap `Scan`\"")
+    sp.add_argument("--kind", default="tap", choices=EDGE_KINDS)
+    sp.add_argument("--status", default="observed", choices=EDGE_STATUSES)
+    sp.add_argument("--spine", action="store_true",
+                    help="Part of the happy path; drawn as a thick arrow")
+    sp.add_argument("--flow", default=None, help="Flow id this transition belongs to")
+    sp.add_argument("--cost", default=None, help="Measured cost, e.g. ~4s or 3 taps")
+    sp.add_argument("--condition", default=None,
+                    help="State that selects this branch, e.g. \"quota exhausted\"")
+    sp.add_argument("--evidence", action="append", help="Screenshot path; repeatable")
+    sp.add_argument("--tag", action="append", help="Free tag, e.g. journey; repeatable")
+    sp.add_argument("--note", default=None)
+    sp.set_defaults(func=cmd_add_edge)
+
+    sp = with_root(sub.add_parser("render-diagram",
+                                 help="Generate a Mermaid user-flow diagram"))
+    sp.add_argument("--scope", default="app", choices=DIAGRAM_SCOPES)
+    sp.add_argument("--flow", default=None, help="Flow id, required for --scope flow")
+    sp.add_argument("--direction", default=None, choices=["TD", "TB", "LR", "RL", "BT"])
+    sp.add_argument("--tag", action="append", help="Only edges carrying this tag")
+    sp.add_argument("--observed-only", action="store_true",
+                    help="Drop inferred and blocked edges")
+    sp.add_argument("--no-back", action="store_true", help="Drop back-navigation edges")
+    sp.add_argument("--no-evidence", action="store_true",
+                    help="Omit the evidence table under the diagram")
+    sp.add_argument("--inject", default=None,
+                    help="Report to write into, between flow-diagram markers")
+    sp.add_argument("--out", default=None, help="Write the block to this file instead")
+    sp.add_argument("--strict", action="store_true", help="Exit 1 if lint warns")
+    sp.set_defaults(func=cmd_render_diagram)
 
     sp = with_root(sub.add_parser("add-finding", help="Record a finding"))
     sp.add_argument("--type", required=True, choices=FINDING_TYPES)

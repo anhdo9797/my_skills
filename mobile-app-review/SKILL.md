@@ -11,7 +11,11 @@ description: >-
   whether it persists, tests both success and failure cases for flows like login
   or checkout, produces data when a list is empty instead of reporting it as
   empty — and alongside that maps every screen with vision plus the
-  accessibility tree into per-screen reports with embedded screenshots. Tracks
+  accessibility tree into per-screen reports with embedded screenshots. Records
+  every screen transition it actually traverses as it goes, so it can generate an
+  accurate Mermaid user-flow diagram of the whole app (navigation map, per-flow
+  flowchart, first-run journey) where every arrow traces back to a screenshot
+  instead of a guess. Tracks
   progress in a changelock file so a review can be paused today and resumed
   tomorrow exactly where it stopped. Use this skill whenever the user wants to
   analyze, review, teardown, reverse-engineer, benchmark, test, or "study" a
@@ -19,7 +23,9 @@ description: >-
   X", "review app X", "xem app X có gì", "app X hoạt động thế nào", "test luồng
   login của app X", "test luồng scan/camera của app X",
   "check the paywall / subscription tiers of X", "where does
-  app X put its ads", "map the features of X", or paste a Play Store / App Store
+  app X put its ads", "map the features of X", "vẽ userflow / sơ đồ luồng / user
+  flow diagram của app X", "vẽ workflow của cả app", "map the navigation of X",
+  "diagram how users move through X", or paste a Play Store / App Store
   link or a bundle id like com.example.app. Also use it to continue an unfinished
   review ("tiếp tục review app X", "resume the teardown").
 compatibility: >-
@@ -93,6 +99,15 @@ library, and a physical device can be pointed at a fixture displayed on screen.
 `scripts/camera_fixture.py check` names the one your target supports. For a
 scanner app this *is* the review; "camera opened, not tested further" is the
 screenshotter's version of it.
+
+**The map is a deliverable, and it gets built as you walk.** One of the review's
+outputs is a diagram of how a person moves through the app, and the only way to
+make it accurate is to record each transition at the moment you watch it happen —
+one `add-edge` call with the screenshot that proves it. Reconstructed at the end
+from memory, a flow diagram grows arrows nobody ever traversed, and a reader has no
+way to tell those from the real ones. `references/user-flow-diagrams.md` has the
+protocol; the diagram itself is generated from what you recorded, never drawn by
+hand.
 
 **Test success before you test failure.** For any flow with cases — login, signup,
 checkout, search, upload — complete the happy path with valid input *first*, then
@@ -221,6 +236,12 @@ testing.
 Then seed the changelock: register the flows with `add-flow` (core first), and
 queue the top-level screens in review order.
 
+Record this pass as edges while you do it (`add-edge --tag journey` for the
+install → onboarding → first-value path, plain edges for the top-level
+navigation). This is the only moment in the whole review when you see the app the
+way a new user does — that state is unrecoverable an hour from now, and it's what
+the first-run journey diagram is made of.
+
 #### 3b. Core flow deep dive — do this before the screen loop
 
 Read **`references/flow-investigation.md`** now, `set-phase --phase core-flow` so a
@@ -235,6 +256,13 @@ Why before the screens, and not after: running the flow walks you through most o
 the app's important screens anyway, and it **leaves data behind**. History, recent
 rows, counters, and item-detail screens are all empty shells until the core flow
 has run once. Doing screens first means visiting half of them twice.
+
+Record the flow's transitions as you run it: `--spine` on the happy path so the
+main route reads at a glance, `--condition` on the branches, `--cost` where you
+timed something, and a `system`/`gate`/`store` node (`add-node`) wherever the flow
+passes through something that isn't a screen — a server round-trip, a quota
+paywall, the place the result gets saved. Those non-screen nodes are most of what
+makes the flow diagram worth more than a sitemap.
 
 Update the flow in the changelock (`update-flow`) after each case, the same
 discipline as screens. `status` warns while a core flow is unfinished — that
@@ -253,7 +281,8 @@ include the success path, not just the failures.
 
 #### 3c. Per-screen loop
 
-Two reference files govern this loop, and you need both before the first screen:
+Three reference files govern this loop, and you need the first two before the
+first screen:
 
 - **`references/screen-reading.md`** — *how to look at a screenshot.* The six-zone
   sweep, the six analytical lenses, and the two artifacts you must produce for
@@ -263,13 +292,18 @@ Two reference files govern this loop, and you need both before the first screen:
 - **`references/exploration.md`** — *the mechanics.* Navigation by route, scroll
   capture, screen-signature dedupe that stops infinite loops, handling
   interstitials and permission dialogs, and recovery when you get stuck.
+- **`references/user-flow-diagrams.md`** — *the map you build as a side-effect.* At
+  minimum read its recording section before the first screen: the `add-edge` call
+  belongs in this loop, and an edge not recorded here is one you'll be tempted to
+  invent in Phase 4.
 
 The loop in one line:
 
 > navigate by route → screenshot → **Screen Read** → cross-check with
 > `mobile_list_elements_on_screen` → **Test Plan** → scroll to capture the full
 > screen → execute the plan by priority → write the screen report → queue newly
-> discovered screens with their route → back out → **update changelock**
+> discovered screens with their route → **record each transition you traversed
+> (`add-edge`)** → back out → **update changelock**
 
 Update the changelock after *every* screen, not at the end. A crash between
 screens should cost you one screen, not the session.
@@ -316,10 +350,25 @@ cross-cutting analysis. These are the files the user actually reads first:
 - `analysis/monetization.md` — every ad placement (screen, position, format,
   trigger, frequency) and the complete subscription picture (tiers, prices, trial,
   where paywalls fire). Template and checklist in `references/monetization.md`.
-- `analysis/ux-flows.md` — the key user journeys end to end (onboarding → first
-  value, the core loop, the upgrade path), synthesised *from* the flow reports in
-  `flows/` rather than re-derived: time-to-first-value, how many taps and how many
-  seconds the core loop costs, where the data ends up, and where the friction is
+- `analysis/ux-flows.md` — **the user-flow diagrams**, generated from the
+  transitions you recorded, then annotated. Three of them: the app navigation map,
+  one flowchart per flow (core first), and the first-run journey from install to
+  first value. Around them goes what a diagram can't carry — time-to-first-value,
+  the repeat cost of the core loop in taps and seconds, the gate table, and the
+  friction. Start from `assets/user-flow-template.md`, follow
+  `references/user-flow-diagrams.md`, and generate rather than draw:
+
+  ```bash
+  python3 <skill-dir>/scripts/changelock.py render-diagram --root <root> \
+    --scope app --inject analysis/ux-flows.md
+  python3 <skill-dir>/scripts/changelock.py render-diagram --root <root> \
+    --scope flow --flow <flow-id> --inject analysis/ux-flows.md
+  ```
+
+  Each render lints the graph and prints what would make the diagram misleading —
+  arrows without evidence, unreachable nodes, documented screens missing from the
+  map. Fix those before you publish; they are precisely the things a reader can't
+  catch on their own.
 - `analysis/data-and-limits.md` — what the app does with user data across all
   flows: what's stored locally vs server-side, what survives a relaunch, what needs
   an account, what the free tier actually allows, and any behaviour that
@@ -341,6 +390,8 @@ and a progress bar — from the changelock. Then give the user a short chat summ
 - The 3–5 most interesting findings, including anything that surprised you or
   contradicted the store listing
 - Monetization in two sentences
+- A pointer to the app map in `analysis/ux-flows.md` — for most readers the diagram
+  is the fastest way into everything else, so name it explicitly
 - Coverage and honest gaps: which flows and cases you ran, what stayed blocked and
   why, and how to resume
 
@@ -390,6 +441,8 @@ apply rather than filling them with "N/A":
 
 - `assets/screen-report-template.md` — per-screen inventory and behaviour
 - `assets/flow-report-template.md` — happy path, data lifecycle, case matrix
+- `assets/user-flow-template.md` — the diagram sections with their generator
+  markers, plus the journey, gate and friction prose around them
 
 ## Changelock script
 
@@ -404,6 +457,9 @@ apply rather than filling them with "N/A":
 | `update-flow` | Set status/report path on a flow, and record each case run |
 | `add-screen` | Queue a newly discovered screen with its route |
 | `update-screen` | Set status/report path/screenshots/notes on a screen |
+| `add-node` | Declare a non-screen diagram node (system step, gate, storage, terminal) |
+| `add-edge` | Record one transition you traversed, with its trigger and evidence |
+| `render-diagram` | Generate a Mermaid user-flow diagram (`--scope app\|flow\|journey`) and lint the graph |
 | `add-finding` | Record an ad slot, paywall, bug, data behaviour, or blocker |
 | `set-phase` | Move between phases |
 | `render-index` | Regenerate `README.md` from the changelock |
@@ -485,6 +541,10 @@ context the whole time:
   the measured poster presets, live fixture swapping, the fixture set a camera
   flow needs, the camera case matrix, and what each route does *not* prove.
   Driven by `scripts/camera_fixture.py`
+- `references/user-flow-diagrams.md` — **read this before the screen loop, not
+  after.** How to record transitions as you traverse them, the node and edge
+  taxonomy, the three diagrams (app map, per-flow, first-run journey), and the
+  accuracy checklist that keeps an arrow from claiming more than you saw
 - `references/monetization.md` — ad placement taxonomy, paywall trigger catalog,
   subscription tier extraction, and the analysis templates
 - `references/store-research.md` — what to pull from Play Store / App Store /
