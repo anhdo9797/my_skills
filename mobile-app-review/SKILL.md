@@ -146,6 +146,14 @@ case.** The changelock enforces these mechanically, not just on the honor
 system, because judgment erodes under context pressure exactly when it matters
 most:
 
+- `init` refuses to create a second folder for an app already under review, and
+  refuses a root that isn't `<reviews-dir>/<slug>/<platform>` or a slug carrying a
+  retry marker (`-fresh`, `-v2`, `-test`, `-copy`). A duplicate folder is the most
+  expensive mistake in this skill: the screenshots, findings and diagram split
+  across two trees and neither session can resume either.
+- Report, screenshot and evidence paths are stored relative to the review root, and
+  an absolute path or one that escapes the root is refused. Output that lands
+  outside the root is invisible to the index and the diagram.
 - `update-screen --status done` refuses a screen with zero screenshots attached.
   If a screen genuinely can't be captured, that's `blocked`, not `done`.
 - `update-flow --status done` refuses a flow with no completed `happy` case, and
@@ -170,21 +178,35 @@ Six phases. Phase 0–2 run once per app; phase 3 is the long loop; 4–5 close 
 The changelock records which phase you're in, so on resume you jump straight to
 the right one.
 
-### Phase 0 — Resume check (always first)
+### Phase 0 — Resolve the one folder (always first)
 
-Before anything else, look for an existing review of this app in the working
-directory:
+**One app + one platform = exactly one folder, for the whole life of the review.**
+Before anything else, ask which folder this review belongs in — never guess a path
+and never invent a new one:
 
 ```bash
-python3 <skill-dir>/scripts/changelock.py status --root reviews/<app-slug>/<platform>
+python3 <skill-dir>/scripts/changelock.py resolve \
+  --app-name "Spoonful" --platform android --package com.spoonful.app
 ```
 
-If it exists, print a short summary to the user (screens done, screens queued,
-where you left off) and skip straight to the phase it names. Do not re-run store
-research or re-explore finished screens — that's the entire point of the
-changelock. Only redo a screen if the app version changed or the user asks.
+The answer starts with one of two words, and it is not a suggestion:
 
-If it doesn't exist, continue to Phase 1.
+- **`EXISTING <root>`** — this app is already under review, possibly filed under a
+  different slug by an earlier session. That folder *is* the review. Run `status
+  --root <root>`, print a short summary to the user (screens done, screens queued,
+  where you left off) and jump straight to the phase it names. Do **not** run
+  `init`. Do not re-run store research or re-explore finished screens — that's the
+  entire point of the changelock. Only redo a screen if the app version changed or
+  the user asks.
+- **`NEW <root>`** — no review exists yet. Use *exactly* that root in Phase 2's
+  `init`, unchanged.
+
+`resolve` also derives the slug, deterministically, from the app name (`PlantID` →
+`plantid`, `Spoonful: Eats` → `spoonful-eats`), so the same app always lands in the
+same folder no matter how the request was phrased. Take the slug it gives you.
+
+`changelock.py list` shows every review folder on disk and flags apps that
+somehow ended up owning more than one — use it if you suspect a split.
 
 ### Phase 1 — Identify and research the app
 
@@ -232,11 +254,12 @@ candidates with developer name and install count and let them pick.
    Then set it up per `references/camera-flows.md` and generate the fixture set.
    Doing this here rather than mid-flow saves an emulator cold boot later.
 
-Initialize the workspace and changelock now, before exploring:
+Initialize the workspace and changelock now, before exploring — at the root Phase 0
+resolved, with the slug it derived, and nowhere else:
 
 ```bash
 python3 <skill-dir>/scripts/changelock.py init \
-  --root reviews/<app-slug>/android \
+  --root reviews/plantid/android \
   --app-name "PlantID" --slug plantid --platform android \
   --package com.example.plantid --device emulator-5554 \
   --screen-width 1080 --screen-height 2400 --lang vi
@@ -432,7 +455,14 @@ and a progress bar — from the changelock. Then give the user a short chat summ
 
 ## Output layout
 
-Everything lives under the working directory:
+Everything lives under the working directory, in **one folder per app + platform**.
+That folder is created once, by Phase 2's `init`, at the root Phase 0 resolved; every
+later session writes into the same tree. A second folder for the same app — a
+`-fresh` sibling, a `-v2`, a slug spelled differently — is a bug, not a new review:
+it re-shoots screenshots that already exist, and it strands half the findings where
+neither the index nor the diagram can see them. `<app-slug>/<platform>` is the only
+place a folder name is chosen; screens live under `report/` inside it, never as a
+sibling of the app folder.
 
 ```
 reviews/<app-slug>/<platform>/
@@ -485,7 +515,9 @@ apply rather than filling them with "N/A":
 
 | Command | What it does |
 |---|---|
-| `init` | Create the folder tree and a fresh changelock |
+| `resolve` | Phase 0: name the one folder this app+platform belongs in (`EXISTING`/`NEW`) |
+| `list` | List every review folder on disk and flag apps owning more than one |
+| `init` | Create the folder tree and a fresh changelock, at the resolved root only |
 | `status` | Human-readable progress; use on resume and when reporting |
 | `next` | Pop the next queued screen and mark it `in_progress` |
 | `add-flow` | Register a flow (core or secondary) with its entry route |

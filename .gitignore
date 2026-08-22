@@ -1,3 +1,6 @@
 .claude
 .agents
 draft
+reviews/
+.codex/
+docx_work

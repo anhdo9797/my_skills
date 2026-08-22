@@ -9,7 +9,14 @@ explore, and the running list of findings.
 All state mutation goes through this script so the JSON stays valid and
 timestamps stay honest. Run any subcommand with --help for its flags.
 
+One app + one platform = one folder, `reviews/<slug>/<platform>`. Always `resolve`
+before `init`: it finds the folder an earlier session already created (even under a
+different slug) so a resumed review never forks into a sibling tree.
+
 Usage:
+    python3 changelock.py resolve --app-name PlantID --platform android \\
+        --package com.example.plantid
+    python3 changelock.py list
     python3 changelock.py init --root reviews/plantid/android \\
         --app-name PlantID --slug plantid --platform android \\
         --package com.example.plantid --device emulator-5554
@@ -38,9 +45,12 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import os
+import re
 import sys
+import unicodedata
 from datetime import datetime, timezone
 from typing import Any
 
@@ -65,6 +75,22 @@ EDGE_STATUSES = ["observed", "inferred", "blocked"]
 DIAGRAM_SCOPES = ["app", "flow", "journey"]
 
 SUBDIRS = ["00-overview", "flows", "report", "screenshots", "analysis"]
+
+# One app + one platform = exactly one review folder, `<reviews-dir>/<slug>/<platform>`.
+# Everything below exists to enforce that: a second folder for an app already under
+# review splits the screenshots, the findings and the diagram across two trees, and
+# the changelock can no longer resume either of them.
+REVIEWS_DIRNAME = "reviews"
+SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+
+# Slug tails that mean "another go at the same app", never a different app. These are
+# what turn one review into six sibling folders (`fig`, `fig-fresh`, `fig-v2`, ...).
+BANNED_SLUG_TAILS = {
+    "fresh", "new", "old", "test", "tests", "tmp", "temp", "copy", "clone",
+    "retry", "again", "final", "backup", "bak", "review", "run", "draft",
+    "wip", "fix", "fixed", "real", "actual", "latest", "attempt",
+}
+VERSION_TAIL_RE = re.compile(r"^v?\d+$")
 
 STATUS_ICON = {
     "done": "[x]",
@@ -117,7 +143,250 @@ def save(root: str, data: dict[str, Any]) -> None:
     os.replace(tmp, path)
 
 
+# ------------------------------------------------------------------ one-folder
+
+
+def strip_accents(text: str) -> str:
+    """Return `text` with combining marks removed, so `Trygg\u00e5t` slugs as `tryggat`."""
+    decomposed = unicodedata.normalize("NFKD", text)
+    return "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+
+
+def derive_slug(app_name: str) -> str:
+    """Derive the one canonical folder slug for an app name.
+
+    Deterministic on purpose: the same app name always yields the same slug, so a
+    later session lands on the folder the earlier one created instead of inventing
+    a sibling. `PlantID` -> `plantid`, `Spoonful: Eats` -> `spoonful-eats`.
+    """
+    slug = re.sub(r"[^a-z0-9]+", "-", strip_accents(app_name).lower()).strip("-")
+    return slug or "app"
+
+
+def normalize_name(text: str | None) -> str:
+    """Reduce a name to comparable letters and digits only, for identity matching."""
+    return re.sub(r"[^a-z0-9]+", "", strip_accents(text or "").lower())
+
+
+def slug_stem(slug: str) -> str:
+    """Strip trailing retry/version tokens so `fig-fresh` and `fig-v2` both stem to `fig`."""
+    parts = slug.split("-")
+    while len(parts) > 1 and (parts[-1] in BANNED_SLUG_TAILS
+                             or VERSION_TAIL_RE.match(parts[-1])):
+        parts.pop()
+    return "-".join(parts)
+
+
+def validate_slug(slug: str, app_name: str | None = None,
+                  strict: bool = True) -> None:
+    """Exit unless `slug` is a clean, canonical folder slug.
+
+    `strict=False` keeps the charset rule but allows a retry-marker tail, so an
+    existing legacy folder (`fig-fresh/`) can still be operated on with --force
+    instead of being stranded.
+    """
+    if not SLUG_RE.match(slug):
+        suggestion = derive_slug(app_name or slug)
+        sys.exit(f"Slug '{slug}' is not a clean folder slug (lowercase a-z0-9 joined "
+                 f"by single hyphens). Use --slug {suggestion}.")
+    stem = slug_stem(slug)
+    if strict and stem != slug:
+        sys.exit(
+            f"Slug '{slug}' ends in a retry marker ('{slug.rsplit('-', 1)[1]}').\n"
+            f"That marker is how one app ends up with several review folders. The app "
+            f"folder is '{stem}' whether this is the first pass or the fifth: resume "
+            f"'{REVIEWS_DIRNAME}/{stem}/<platform>' instead, or pass --slug {stem}."
+        )
+
+
+def review_roots(reviews_dir: str) -> list[str]:
+    """Return every review root under `reviews_dir` that holds a changelock."""
+    found = set()
+    for depth in ("*", "*/*", "*/*/*"):
+        for hit in glob.glob(os.path.join(reviews_dir, depth, FILENAME)):
+            found.add(os.path.dirname(hit))
+    return sorted(found)
+
+
+def read_lock(root: str) -> dict[str, Any] | None:
+    """Load a changelock without exiting, for scanning other people's folders."""
+    try:
+        with open(lock_path(root), encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def split_root(root: str) -> tuple[str, str, str]:
+    """Split a review root into (reviews_dir, slug, platform)."""
+    norm = os.path.normpath(root)
+    parts = norm.split(os.sep)
+    if len(parts) < 3:
+        return (os.path.dirname(norm) or ".", os.path.basename(norm), "")
+    return (os.sep.join(parts[:-2]) or ".", parts[-2], parts[-1])
+
+
+def find_related(reviews_dir: str, *, app_name: str | None, slug: str,
+                 package: str | None, platform: str,
+                 exclude: str | None = None) -> list[dict[str, Any]]:
+    """Find existing reviews that are the same app as (app_name, slug, package).
+
+    Matching is deliberately loose — package id first, then app name, then slug
+    stem, then a slug that contains the other as a whole prefix. A false positive
+    costs one `--force`; a false negative costs a duplicate folder tree.
+    """
+    want_pkg = (package or "").lower()
+    want_name = normalize_name(app_name)
+    want_stem = slug_stem(slug)
+    matches = []
+    for root in review_roots(reviews_dir):
+        if exclude and os.path.normpath(root) == os.path.normpath(exclude):
+            continue
+        data = read_lock(root)
+        if not data:
+            continue
+        app = data.get("app", {})
+        other_slug = app.get("slug") or split_root(root)[1]
+        other_stem = slug_stem(other_slug)
+        why = None
+        if want_pkg and (app.get("package") or "").lower() == want_pkg:
+            why = f"same package ({want_pkg})"
+        elif want_name and normalize_name(app.get("name")) == want_name:
+            why = f"same app name ({app.get('name')})"
+        elif normalize_name(want_stem) == normalize_name(other_stem):
+            why = f"same slug stem ({want_stem})"
+        elif (want_stem.startswith(other_stem + "-")
+              or other_stem.startswith(want_stem + "-")):
+            why = f"near-identical slug ({other_slug} vs {slug})"
+        if not why:
+            continue
+        matches.append({
+            "root": root,
+            "why": why,
+            "slug": other_slug,
+            "platform": app.get("platform") or split_root(root)[2],
+            "phase": data.get("phase"),
+            "screens": data.get("screens", {}),
+            "same_folder": normalize_name(other_slug) == normalize_name(slug),
+        })
+    # A sibling folder for the same app is the bug; the same folder's other platform
+    # is the intended layout, so sort the real problems first.
+    matches.sort(key=lambda m: (m["same_folder"], m["platform"] != platform))
+    return matches
+
+
+def describe_match(m: dict[str, Any]) -> str:
+    """One-line summary of a matched review, for resume and refusal messages."""
+    screens = m["screens"]
+    done = sum(1 for s in screens.values() if s.get("status") == "done")
+    return (f"{m['root']}  [{m['why']}]  phase={m['phase']} "
+            f"screens={done}/{len(screens)}")
+
+
+def rel_in_root(root: str, path: str, label: str) -> str:
+    """Validate that `path` is relative to the review root, and return it normalised.
+
+    Report and screenshot paths that escape the root are the other half of the
+    scattered-output problem: a report written to `reviews/<other>/...` or to an
+    absolute path is invisible to this review's index and diagram.
+    """
+    if os.path.isabs(path):
+        sys.exit(f"{label} '{path}' is absolute. Paths are stored relative to the "
+                 f"review root ({root}), e.g. report/home/README.md.")
+    norm = os.path.normpath(path)
+    if norm.startswith(".."):
+        sys.exit(f"{label} '{path}' points outside the review root ({root}). "
+                 "Everything for this review lives inside that one folder.")
+    reviews_dir, slug, platform = split_root(root)
+    head = norm.split(os.sep)[0]
+    strays = {os.path.basename(reviews_dir), REVIEWS_DIRNAME, slug, platform}
+    if head and head in strays:
+        prefix = os.path.normpath(root) + os.sep
+        hint = ""
+        if norm.startswith(prefix):
+            hint = f" Did you mean '{norm[len(prefix):]}'?"
+        sys.exit(f"{label} '{path}' repeats the review root. Store it relative to "
+                 f"{root}, e.g. report/home/README.md.{hint}")
+    if not os.path.exists(os.path.join(root, norm)):
+        print(f"warning: {label} '{norm}' does not exist yet under {root}",
+              file=sys.stderr)
+    return norm
+
+
 # ---------------------------------------------------------------------- commands
+
+
+def cmd_resolve(args: argparse.Namespace) -> None:
+    """Name the one folder this review belongs in — existing or new.
+
+    Phase 0 calls this before anything else. It answers the only question that
+    matters at the start of a session: is this app already under review somewhere,
+    and if not, what is the single folder it goes in?
+    """
+    slug = args.slug or derive_slug(args.app_name)
+    validate_slug(slug, args.app_name)
+    matches = find_related(args.reviews_dir, app_name=args.app_name, slug=slug,
+                           package=args.package, platform=args.platform)
+    # Any existing review of this app on this platform is *the* review, even if an
+    # earlier session filed it under a different slug. Resume it; never fork it.
+    on_platform = [m for m in matches if m["platform"] == args.platform]
+    other = [m for m in matches if m not in on_platform]
+
+    if on_platform:
+        primary = on_platform[0]
+        print(f"EXISTING {primary['root']}")
+        print(f"  {describe_match(primary)}")
+        for m in on_platform[1:] + other:
+            print(f"  also: {describe_match(m)}")
+        print("\nResume this review. Do NOT run `init` and do NOT create another "
+              "folder — read the changelock with:")
+        print(f"  python3 changelock.py status --root {primary['root']}")
+        return
+
+    # A folder already exists for this app on the other platform: reuse its slug so
+    # both platforms sit under one app folder instead of two near-identical ones.
+    if other:
+        adopted = other[0]["slug"]
+        if adopted != slug:
+            print(f"# adopting slug '{adopted}' from {other[0]['root']} "
+                  f"(derived was '{slug}')")
+            slug = adopted
+
+    root = os.path.join(args.reviews_dir, slug, args.platform)
+    print(f"NEW {root}")
+    if other:
+        print("  same app already reviewed on another platform — one app folder, "
+              "one subfolder per platform:")
+        for m in other:
+            print(f"    {describe_match(m)}")
+    print("\nInitialize exactly this root (nothing else) with:")
+    print(f"  python3 changelock.py init --root {root} \\\n"
+          f"    --app-name \"{args.app_name}\" --slug {slug} "
+          f"--platform {args.platform}")
+
+
+def cmd_list(args: argparse.Namespace) -> None:
+    """List every review folder on disk, so duplicates are visible at a glance."""
+    roots = review_roots(args.reviews_dir)
+    if not roots:
+        print(f"No reviews under {args.reviews_dir}/.")
+        return
+    stems: dict[str, list[str]] = {}
+    for root in roots:
+        data = read_lock(root) or {}
+        app = data.get("app", {})
+        screens = data.get("screens", {})
+        done = sum(1 for s in screens.values() if s.get("status") == "done")
+        print(f"{root:<48} {app.get('name') or '?':<24} "
+              f"{app.get('package') or '-':<32} phase={data.get('phase') or '?':<11} "
+              f"screens={done}/{len(screens)}")
+        key = slug_stem(app.get("slug") or split_root(root)[1])
+        stems.setdefault(key, []).append(root)
+    dupes = {k: v for k, v in stems.items() if len({split_root(r)[1] for r in v}) > 1}
+    if dupes:
+        print("\nDuplicate app folders — one app should own exactly one slug folder:")
+        for stem, roots_ in sorted(dupes.items()):
+            print(f"  {stem}: {', '.join(sorted({split_root(r)[1] for r in roots_}))}")
 
 
 def cmd_init(args: argparse.Namespace) -> None:
@@ -125,6 +394,37 @@ def cmd_init(args: argparse.Namespace) -> None:
     path = lock_path(args.root)
     if os.path.exists(path) and not args.force:
         sys.exit(f"Changelock already exists at {path}. Use --force to overwrite.")
+
+    validate_slug(args.slug, args.app_name, strict=not args.force)
+    reviews_dir, root_slug, root_platform = split_root(args.root)
+    if (root_slug, root_platform) != (args.slug, args.platform):
+        sys.exit(
+            f"Root '{args.root}' does not match --slug {args.slug} --platform "
+            f"{args.platform}.\nA review root is always "
+            f"<reviews-dir>/<slug>/<platform>, so this one must be "
+            f"'{os.path.join(reviews_dir, args.slug, args.platform)}'. Screen names "
+            "and run labels never appear at this level — screens live under "
+            "report/ inside the root."
+        )
+
+    if not args.force:
+        related = find_related(reviews_dir, app_name=args.app_name, slug=args.slug,
+                               package=args.package, platform=args.platform,
+                               exclude=args.root)
+        blocking = [m for m in related
+                    if not m["same_folder"] or m["platform"] == args.platform]
+        if blocking:
+            lines = "\n".join(f"  {describe_match(m)}" for m in blocking)
+            sys.exit(
+                f"Refusing to create a second review folder for {args.app_name}. "
+                f"This app is already under review:\n{lines}\n\n"
+                "Resume that folder instead — everything for one app+platform lives "
+                "in exactly one tree, or the screenshots, findings and diagram end "
+                "up split across siblings that neither session can resume:\n"
+                f"  python3 changelock.py status --root {blocking[0]['root']}\n\n"
+                "--force only if this genuinely is a different app that happens to "
+                "share a name."
+            )
 
     os.makedirs(args.root, exist_ok=True)
     for sub in SUBDIRS:
@@ -343,7 +643,7 @@ def cmd_update_flow(args: argparse.Namespace) -> None:
     if args.job:
         flow["job"] = args.job
     if args.report:
-        flow["report"] = args.report
+        flow["report"] = rel_in_root(args.root, args.report, "--report")
     if args.note:
         flow["note"] = args.note
     for sid in args.screen or []:
@@ -447,7 +747,7 @@ def cmd_update_screen(args: argparse.Namespace) -> None:
     if args.title:
         scr["title"] = args.title
     if args.report:
-        scr["report"] = args.report
+        scr["report"] = rel_in_root(args.root, args.report, "--report")
     if args.signature:
         scr["signature"] = args.signature
     if args.precondition:
@@ -460,6 +760,7 @@ def cmd_update_screen(args: argparse.Namespace) -> None:
         except json.JSONDecodeError as exc:
             sys.exit(f"--route is not valid JSON: {exc}")
     for shot in args.screenshot or []:
+        shot = rel_in_root(args.root, shot, "--screenshot")
         if shot not in scr["screenshots"]:
             scr["screenshots"].append(shot)
 
@@ -488,7 +789,8 @@ def cmd_add_finding(args: argparse.Namespace) -> None:
         "screen": args.screen,
         "summary": args.summary,
         "detail": args.detail,
-        "screenshot": args.screenshot,
+        "screenshot": (rel_in_root(args.root, args.screenshot, "--screenshot")
+                       if args.screenshot else None),
         "recorded_at": now(),
     })
     save(args.root, data)
@@ -536,7 +838,8 @@ def cmd_add_node(args: argparse.Namespace) -> None:
         "title": args.title or args.id.split("/")[-1],
         "kind": args.kind,
         "note": args.note,
-        "evidence": args.evidence or [],
+        "evidence": [rel_in_root(args.root, e, "--evidence")
+                     for e in args.evidence or []],
         "created_at": now(),
     }
     save(args.root, data)
@@ -573,7 +876,8 @@ def cmd_add_edge(args: argparse.Namespace) -> None:
         "flow": args.flow,
         "cost": args.cost,
         "condition": args.condition,
-        "evidence": args.evidence or [],
+        "evidence": [rel_in_root(args.root, e, "--evidence")
+                     for e in args.evidence or []],
         "tags": args.tag or [],
         "note": args.note,
         "recorded_at": now(),
@@ -956,6 +1260,22 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Review root, e.g. reviews/plantid/android")
         return sp
 
+    sp = sub.add_parser("resolve",
+                        help="Name the one folder this review belongs in (run first)")
+    sp.add_argument("--app-name", required=True)
+    sp.add_argument("--platform", required=True, choices=["android", "ios"])
+    sp.add_argument("--package", default=None, help="Package name or bundle id")
+    sp.add_argument("--slug", default=None,
+                    help="Override the slug derived from --app-name; must be canonical")
+    sp.add_argument("--reviews-dir", default=REVIEWS_DIRNAME,
+                    help=f"Where reviews live (default: {REVIEWS_DIRNAME})")
+    sp.set_defaults(func=cmd_resolve)
+
+    sp = sub.add_parser("list", help="List every review folder, flagging duplicates")
+    sp.add_argument("--reviews-dir", default=REVIEWS_DIRNAME,
+                    help=f"Where reviews live (default: {REVIEWS_DIRNAME})")
+    sp.set_defaults(func=cmd_list)
+
     sp = with_root(sub.add_parser("init", help="Create workspace and changelock"))
     sp.add_argument("--app-name", required=True)
     sp.add_argument("--slug", required=True)
@@ -968,7 +1288,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--screen-height", type=int, default=None)
     sp.add_argument("--lang", default="vi", help="Report language, e.g. vi or en")
     sp.add_argument("--phase", default="research", choices=PHASES)
-    sp.add_argument("--force", action="store_true")
+    sp.add_argument("--force", action="store_true",
+                    help="Overwrite an existing changelock and skip the "
+                         "duplicate-folder guard. Only for a genuinely different app "
+                         "that shares a name — never to get past the refusal.")
     sp.set_defaults(func=cmd_init)
 
     sp = with_root(sub.add_parser("status", help="Show progress"))

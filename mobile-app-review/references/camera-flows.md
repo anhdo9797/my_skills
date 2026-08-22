@@ -234,7 +234,7 @@ in the review folder so a resumed session reuses the same inputs:
 
 ```bash
 python3 <skill-dir>/scripts/camera_fixture.py make-fixture \
-  --out reviews/<slug>/fixtures/fixture-01-monstera.png \
+  --out reviews/<slug>/<platform>/fixtures/fixture-01-monstera.png \
   --from ~/Downloads/monstera.jpg --label FIXTURE-01
 ```
 
@@ -286,7 +286,7 @@ The pipeline, and none of these steps is optional:
    ```bash
    python3 <skill-dir>/scripts/camera_fixture.py fetch \
      --subject "Monstera deliciosa leaf" --expected "Monstera deliciosa" \
-     --out-dir reviews/<slug>/fixtures --count 3
+     --out-dir reviews/<slug>/<platform>/fixtures --count 3
    ```
    Wikimedia Commons is the default source for good reasons: no API key, stable
    direct URLs, an explicit licence recorded for you, and file titles that *name
@@ -305,19 +305,19 @@ The pipeline, and none of these steps is optional:
    verified:
    ```bash
    python3 <skill-dir>/scripts/camera_fixture.py make-fixture \
-     --from reviews/<slug>/fixtures/raw-monstera-deliciosa-leaf-01.jpg \
-     --out  reviews/<slug>/fixtures/fixture-02-monstera.png --label FIXTURE-02
+     --from reviews/<slug>/<platform>/fixtures/raw-monstera-deliciosa-leaf-01.jpg \
+     --out  reviews/<slug>/<platform>/fixtures/fixture-02-monstera.png --label FIXTURE-02
    ```
 5. **Derive the degraded variants from the promoted fixture**, so the only
    difference is the degradation:
    ```bash
    python3 <skill-dir>/scripts/camera_fixture.py degrade \
-     reviews/<slug>/fixtures/fixture-02-monstera.png --mode blur \
-     --out reviews/<slug>/fixtures/fixture-07-monstera-blur.png
+     reviews/<slug>/<platform>/fixtures/fixture-02-monstera.png --mode blur \
+     --out reviews/<slug>/<platform>/fixtures/fixture-07-monstera-blur.png
    ```
    Modes: `blur` · `rotate` · `dark` · `lowcontrast` · `invert` · `crop` · `small`.
 6. **Check the manifest before you start the case matrix**:
-   `camera_fixture.py manifest reviews/<slug>/fixtures`. Anything still marked
+   `camera_fixture.py manifest reviews/<slug>/<platform>/fixtures`. Anything still marked
    `??` has not been looked at — deal with it now, not after you've written
    conclusions on top of it.
 
