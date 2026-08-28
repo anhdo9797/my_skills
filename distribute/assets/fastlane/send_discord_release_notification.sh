@@ -14,6 +14,9 @@ readonly DEFAULT_JQ_BIN="jq"
 readonly DEFAULT_DISCORD_VERSION_LABEL="⚙️ Version"
 readonly DEFAULT_DISCORD_RELEASE_VERSION_TEMPLATE='{{VERSION}} (Build {{BUILD_NUMBER}})'
 readonly DEFAULT_DISCORD_RELEASE_NOTES_VALUE_TEMPLATE='[Mở bài viết trên Notion]({{RELEASE_URL}})'
+readonly DEFAULT_DISCORD_BACKLOG_LABEL="📌 Backlog"
+readonly DEFAULT_DISCORD_BACKLOG_MAX_ITEMS="10"
+readonly DISCORD_FIELD_VALUE_LIMIT="1000"
 readonly DEFAULT_DISCORD_EMBED_COLOR="#2ECC71"
 readonly DEFAULT_DISCORD_EMBED_AUTHOR_TEMPLATE='{{APP_NAME}} release {{ENVIRONMENT}}'
 readonly DEFAULT_DISCORD_EMBED_FOOTER_TEMPLATE='{{APP_NAME}} • {{PLATFORM}} • {{ENVIRONMENT}}'
@@ -23,6 +26,7 @@ JQ_BIN="${JQ_BIN:-$DEFAULT_JQ_BIN}"
 
 RELEASE_URL=""
 ASSIGNEES_JSON='[]'
+BACKLOG_JSON='[]'
 RELEASE_PLATFORM=""
 RELEASE_VERSION=""
 RELEASE_BUILD_NUMBER=""
@@ -36,6 +40,8 @@ usage() {
     "Options:" \
     "  --release-url <url>       Required Notion release page URL" \
     "  --assignees-json <json>   Required JSON array of Notion assignee names" \
+    "  --backlog-json <json>     Optional JSON array of backlog entries; each is" \
+    "                            a string or {text, url} object" \
     "  --platform <value>        Required release platform" \
     "  --version <value>         Required release version" \
     "  --build-number <value>    Required release build number" \
@@ -52,6 +58,8 @@ usage() {
     "  DISCORD_RELEASE_VERSION_TEMPLATE   Optional template with {{VERSION}}, {{BUILD_NUMBER}}" \
     "  DISCORD_RELEASE_NOTES_LABEL        Required release-notes label" \
     "  DISCORD_RELEASE_NOTES_VALUE_TEMPLATE Optional template with {{RELEASE_URL}}" \
+    "  DISCORD_BACKLOG_LABEL              Optional backlog label (default: 📌 Backlog)" \
+    "  DISCORD_BACKLOG_MAX_ITEMS          Optional backlog item cap (default: 10)" \
     "  DISCORD_TASK_ASSIGNED_LABEL        Required assignee label" \
     "  DISCORD_ACTION_REQUIRED_TEXT       Required action-required text" \
     "  DISCORD_EMBED_COLOR                Optional six-digit hex color, such as #2ECC71" \
@@ -109,6 +117,11 @@ parse_arguments() {
       --assignees-json)
         [[ $# -ge 2 ]] || emit_error "INVALID_ARGUMENT" "--assignees-json requires a value."
         ASSIGNEES_JSON="$2"
+        shift 2
+        ;;
+      --backlog-json)
+        [[ $# -ge 2 ]] || emit_error "INVALID_ARGUMENT" "--backlog-json requires a value."
+        BACKLOG_JSON="$2"
         shift 2
         ;;
       --platform)
@@ -216,6 +229,56 @@ render_assignees() {
         )'
 }
 
+# Render the backlog field value, or an empty string when there is no backlog.
+#
+# Backlog entries arrive either as plain strings or as the {text, url} objects the
+# Notion publisher emits, so both shapes are accepted. The value is capped because
+# Discord rejects an embed field longer than 1024 characters.
+render_backlog_value() {
+  "$JQ_BIN" -rn \
+    --argjson backlog "$BACKLOG_JSON" \
+    --argjson limit "$DISCORD_BACKLOG_MAX_ITEMS" \
+    --argjson value_limit "$DISCORD_FIELD_VALUE_LIMIT" \
+    '
+      def entry:
+        if type == "string" then {text: ., url: null}
+        elif type == "object" then {
+          text: (.text // .original_text // .title // ""),
+          url: (.url // .notion_url // null)
+        }
+        else empty
+        end;
+
+      def display_text:
+        .text | gsub("\\["; "(") | gsub("\\]"; ")");
+
+      ([$backlog[] | entry]
+        | map(select(.text | type == "string" and length > 0))) as $items
+      | ($items | length) as $total
+      | if $total == 0 then ""
+        else
+          (
+            $items[0:$limit]
+            | map(
+                if (.url | type == "string" and length > 0)
+                then "• [" + display_text + "](" + .url + ")"
+                else "• " + display_text
+                end
+              )
+            | join("\n")
+          ) as $rendered
+          | (if $total > $limit
+             then $rendered + "\n• +" + (($total - $limit) | tostring) + " more"
+             else $rendered
+             end)
+          | if (. | length) > $value_limit
+            then (.[0:$value_limit] + "…")
+            else .
+            end
+        end
+    '
+}
+
 # Render unique Discord user IDs that are allowed to receive a mention notification.
 render_mentioned_user_ids() {
   "$JQ_BIN" -cn \
@@ -238,6 +301,7 @@ build_payload() {
   local timestamp="$6"
   local color="$7"
   local mentioned_user_ids="$8"
+  local backlog_value="$9"
 
   "$JQ_BIN" -n \
     --arg username "$DISCORD_USERNAME" \
@@ -247,6 +311,8 @@ build_payload() {
     --arg version "$release_version" \
     --arg release_notes_label "$DISCORD_RELEASE_NOTES_LABEL" \
     --arg release_notes_value "$release_notes_value" \
+    --arg backlog_label "$DISCORD_BACKLOG_LABEL" \
+    --arg backlog_value "$backlog_value" \
     --arg task_assigned_label "$DISCORD_TASK_ASSIGNED_LABEL" \
     --arg assignees "$assignees_text" \
     --arg action_required_text "$DISCORD_ACTION_REQUIRED_TEXT" \
@@ -260,12 +326,19 @@ build_payload() {
       embeds: [{
         color: $color,
         author: {name: $author_name},
-        fields: [
-          {name: $version_label, value: ("**" + $version + "**"), inline: true},
-          {name: $release_notes_label, value: $release_notes_value, inline: true},
-          {name: $task_assigned_label, value: $assignees, inline: false},
-          {name: "\u200b", value: $action_required_text, inline: false}
-        ],
+        fields: (
+          [
+            {name: $version_label, value: ("**" + $version + "**"), inline: true},
+            {name: $release_notes_label, value: $release_notes_value, inline: true}
+          ]
+          + (if $backlog_value == "" then []
+             else [{name: $backlog_label, value: $backlog_value, inline: false}]
+             end)
+          + [
+            {name: $task_assigned_label, value: $assignees, inline: false},
+            {name: "\u200b", value: $action_required_text, inline: false}
+          ]
+        ),
         footer: {text: $footer},
         timestamp: $timestamp
       }],
@@ -321,6 +394,7 @@ validate_configuration() {
   require_configuration "DISCORD_RELEASE_VERSION_TEMPLATE" "$DISCORD_RELEASE_VERSION_TEMPLATE"
   require_configuration "DISCORD_RELEASE_NOTES_LABEL" "$DISCORD_RELEASE_NOTES_LABEL"
   require_configuration "DISCORD_RELEASE_NOTES_VALUE_TEMPLATE" "$DISCORD_RELEASE_NOTES_VALUE_TEMPLATE"
+  require_configuration "DISCORD_BACKLOG_LABEL" "$DISCORD_BACKLOG_LABEL"
   require_configuration "DISCORD_TASK_ASSIGNED_LABEL" "$DISCORD_TASK_ASSIGNED_LABEL"
   require_configuration "DISCORD_ACTION_REQUIRED_TEXT" "$DISCORD_ACTION_REQUIRED_TEXT"
   require_configuration "DISCORD_EMBED_COLOR" "$DISCORD_EMBED_COLOR"
@@ -338,6 +412,11 @@ validate_configuration() {
   "$JQ_BIN" -e 'type == "array" and all(.[]; type == "string")' \
     >/dev/null 2>&1 <<< "$ASSIGNEES_JSON" || emit_error \
     "INVALID_ARGUMENT" "--assignees-json must be a JSON array of strings."
+  "$JQ_BIN" -e 'type == "array" and all(.[]; type == "string" or type == "object")' \
+    >/dev/null 2>&1 <<< "$BACKLOG_JSON" || emit_error \
+    "INVALID_ARGUMENT" "--backlog-json must be a JSON array of strings or objects."
+  [[ "$DISCORD_BACKLOG_MAX_ITEMS" =~ ^[1-9][0-9]*$ ]] || emit_error \
+    "INVALID_CONFIGURATION" "DISCORD_BACKLOG_MAX_ITEMS must be a positive integer."
   "$JQ_BIN" -e 'type == "object" and all(.[]; type == "string" and test("^[0-9]+$"))' \
     >/dev/null 2>&1 <<< "$DISCORD_ASSIGNEE_MAP_JSON" || emit_error \
     "INVALID_CONFIGURATION" "DISCORD_ASSIGNEE_MAP_JSON must map names to numeric Discord user IDs."
@@ -351,7 +430,8 @@ main() {
   local rendered_assignees_json='[]'
   local rendered_assignees_text=""
   local mentioned_user_ids='[]'
-  local footer=""
+  local backlog_value=""
+  local footer=""""
   local timestamp=""
   local color=""
   local payload=""
@@ -369,6 +449,8 @@ main() {
   DISCORD_RELEASE_VERSION_TEMPLATE="${DISCORD_RELEASE_VERSION_TEMPLATE:-$DEFAULT_DISCORD_RELEASE_VERSION_TEMPLATE}"
   DISCORD_RELEASE_NOTES_LABEL="${DISCORD_RELEASE_NOTES_LABEL:-}"
   DISCORD_RELEASE_NOTES_VALUE_TEMPLATE="${DISCORD_RELEASE_NOTES_VALUE_TEMPLATE:-$DEFAULT_DISCORD_RELEASE_NOTES_VALUE_TEMPLATE}"
+  DISCORD_BACKLOG_LABEL="${DISCORD_BACKLOG_LABEL:-$DEFAULT_DISCORD_BACKLOG_LABEL}"
+  DISCORD_BACKLOG_MAX_ITEMS="${DISCORD_BACKLOG_MAX_ITEMS:-$DEFAULT_DISCORD_BACKLOG_MAX_ITEMS}"
   DISCORD_TASK_ASSIGNED_LABEL="${DISCORD_TASK_ASSIGNED_LABEL:-}"
   DISCORD_ACTION_REQUIRED_TEXT="${DISCORD_ACTION_REQUIRED_TEXT:-}"
   DISCORD_EMBED_COLOR="${DISCORD_EMBED_COLOR:-$DEFAULT_DISCORD_EMBED_COLOR}"
@@ -390,6 +472,7 @@ main() {
   rendered_assignees_json="$(render_assignees)"
   rendered_assignees_text="$("$JQ_BIN" -r 'join(", ")' <<< "$rendered_assignees_json")"
   mentioned_user_ids="$(render_mentioned_user_ids)"
+  backlog_value="$(render_backlog_value)"
   footer="$(render_embed_footer)"
   [[ -n "$footer" ]] || emit_error \
     "INVALID_CONFIGURATION" "DISCORD_EMBED_FOOTER_TEMPLATE renders an empty footer."
@@ -399,14 +482,21 @@ main() {
   payload="$(build_payload \
     "$embed_author" "$release_version" "$release_notes_value" \
     "$rendered_assignees_text" "$footer" "$timestamp" \
-    "$color" "$mentioned_user_ids")"
+    "$color" "$mentioned_user_ids" "$backlog_value")"
 
   send_webhook "$payload"
   "$JQ_BIN" -n \
     --arg title "$embed_author" \
     --argjson assignees "$rendered_assignees_json" \
     --argjson mentioned_user_ids "$mentioned_user_ids" \
-    '{success: true, title: $title, assignees: $assignees, mentioned_user_ids: $mentioned_user_ids}'
+    --argjson backlog_count "$("$JQ_BIN" -n --argjson backlog "$BACKLOG_JSON" '$backlog | length')" \
+    '{
+      success: true,
+      title: $title,
+      assignees: $assignees,
+      mentioned_user_ids: $mentioned_user_ids,
+      backlog_count: $backlog_count
+    }'
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

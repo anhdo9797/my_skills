@@ -2,7 +2,7 @@
 
 A technical reference guide for integrating Notion Task workflows with Agent Skills across multi-agent environments, Fastlane pipelines, and standalone backend/script runtimes.
 
-**Version:** 1.0 (Updated 2026-07-30)  
+**Version:** 2.0 (Updated 2026-08-27)  
 **Notion API Version:** `2026-03-11`  
 **Supported OS / Environments:** macOS / Linux / CI  
 
@@ -28,6 +28,23 @@ This workflow establishes Notion as a structured task source while using Agent S
 4. **Validate:** Agent runs repository-required linters, unit tests, and build checks.
 5. **Synchronize Results:** Upon verification success, agent updates status, proof of test, and outputs in Notion.
 
+### 1.2.1. Release Distribution Pipeline
+
+For mobile releases the skill builds four layers, each owning exactly one
+responsibility:
+
+| Layer | Owns | Does not own |
+| :--- | :--- | :--- |
+| **CircleCI** | Machine setup, secret injection, branch filters | Build commands, notification payloads |
+| **Fastlane** | Build, sign, upload, release metadata, orchestration | HTTP calls to Notion or Discord |
+| **`publish_notion_release.sh`** | Task lookup, release page creation | Build steps, Discord payloads |
+| **`send_discord_release_notification.sh`** | Embed payload, mentions | Task lookup, release metadata |
+
+Release notes carry three optional sections — **Feature**, **Bug**, and
+**Backlog**. Empty sections, placeholder bullets, and unknown headings degrade
+gracefully instead of failing a build that already shipped. See
+`references/release-notes-format.md`.
+
 ### 1.3. Component Responsibility Matrix
 
 | Component | Main Responsibility | Anti-Patterns (Must Avoid) |
@@ -35,6 +52,7 @@ This workflow establishes Notion as a structured task source while using Agent S
 | **`SKILL.md`** | Trigger conditions, flow directives, guardrails, entrypoint routing | Hardcoded tokens, long unnecessary guides |
 | **`scripts/`** | Notion API calls, payload normalization, input validation | Hardcoded secrets, user shell profile dependencies |
 | **`Fastfile`** | Lane orchestration, env verification, argument passing | Real tokens, hardcoded database/data source IDs |
+| **`.circleci/config.yml`** | Executor setup, secret decoding, lane invocation | Notification logic, build commands duplicated from lanes |
 | **`Notion`** | Task source, status tracking, acceptance criteria, test evidence links | Credentials, private access tokens, sensitive logs |
 | **CI Secret Store** | Injecting runtime environment variables | Committing secrets into source repositories |
 
@@ -52,12 +70,24 @@ Agent Skills are organized into folders containing a primary `SKILL.md` file alo
 ```text
 .agents/skills/distribute/
 ├── SKILL.md
-├── scripts/
-│   └── run.sh
+├── README.md
 ├── references/
-│   └── notion-schema.md
+│   ├── fastlane-integration.md
+│   ├── circleci-integration.md
+│   ├── env-layouts.md
+│   ├── release-notes-format.md
+│   ├── environment-configuration.md
+│   └── validation.md
+├── examples/
+│   ├── flutter-circleci-firebase/     # complete pipeline, greenfield
+│   └── add-notifications-to-existing-fastlane/
+├── scripts/
+│   └── run_mock_tests.sh
 └── assets/
-    └── payload-template.json
+    ├── release_notes.example.txt
+    └── fastlane/
+        ├── publish_notion_release.sh
+        └── send_discord_release_notification.sh
 ```
 
 * **Requirement:** `SKILL.md` must contain standard YAML frontmatter with `name` and `description`. The `description` acts as the trigger signal for agent activation.

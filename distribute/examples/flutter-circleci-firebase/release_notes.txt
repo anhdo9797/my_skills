@@ -1,0 +1,9 @@
+🧩 Features:
+- Known feature title
+- iOS Another feature title
+
+🐞 Bug Fixed:
+- Android New [BUG 10] - Crash when opening the camera
+
+📌 Backlog:
+- Deferred task title

@@ -1,0 +1,317 @@
+# Reference Fastfile for the distribute skill.
+#
+# Copy the parts a project actually needs. When the project already has a
+# Fastfile, keep its build and upload steps and graft only the notification
+# boundary onto them: the value of this file is the release-metadata and
+# notification wiring, not the build commands.
+
+require "json"
+require "open3"
+require "shellwords"
+
+# Returns the selected Fastlane environment as a release-facing label.
+#
+# Fastlane already knows which dotenv file was selected, so deriving the label
+# here keeps a single source of truth instead of a second RELEASE_ENVIRONMENT
+# variable that can drift.
+def release_environment
+  environment = Fastlane::Actions.lane_context[
+    Fastlane::Actions::SharedValues::ENVIRONMENT
+  ].to_s
+  UI.user_error!("A Fastlane environment is required. Pass --env dev or --env prod.") if environment.empty?
+
+  {
+    "dev" => "Development",
+    "staging" => "Staging",
+    "prod" => "Production"
+  }.fetch(environment, environment)
+end
+
+# Returns a required lane option without exposing sensitive values in logs.
+def required_lane_option(options, name)
+  value = options[name]
+  UI.user_error!("Missing required lane option: #{name}") if value.nil? || value.to_s.empty?
+  value.to_s
+end
+
+# Runs a Fastlane-owned release script and keeps JSON stdout separate from logs.
+#
+# `sh` is deliberately avoided here: Fastlane decorates its output, and the
+# Notion publisher's stdout has to stay parseable JSON.
+def run_release_notification_script(script_name, arguments)
+  script_path = File.join(__dir__, script_name)
+  UI.user_error!("Release script not found: #{script_path}") unless File.file?(script_path)
+
+  command = ["bash", script_path] + arguments.map(&:to_s)
+  UI.command(command.shelljoin)
+  stdout, stderr, status = Open3.capture3(*command)
+  stderr.each_line do |line|
+    UI.command_output(line.strip) unless line.strip.empty?
+  end
+
+  return stdout if status.success?
+
+  output = [stdout, stderr].reject(&:empty?).join
+  UI.user_error!(
+    "Release notification failed with exit status #{status.exitstatus}.\n#{output}"
+  )
+end
+
+# Publishes the Notion release page, then announces it on Discord.
+#
+# Notion runs first because Discord needs the page URL and the assignee list it
+# produces. A failure here means the build already shipped, so the error message
+# must not read as a build failure.
+def publish_release_notifications(platform:, version:, build_number:, release_notes_path: nil)
+  release_notes_path ||= File.expand_path("../release_notes.txt", __dir__)
+  UI.user_error!("Release notes not found: #{release_notes_path}") unless File.file?(release_notes_path)
+
+  environment = release_environment
+
+  notion_output = run_release_notification_script(
+    "publish_notion_release.sh",
+    [
+      "--input", release_notes_path,
+      "--platform", platform,
+      "--version", version,
+      "--build-number", build_number,
+      "--environment", environment
+    ]
+  )
+
+  begin
+    notion_result = JSON.parse(notion_output)
+  rescue JSON::ParserError => error
+    UI.user_error!("Notion publisher returned invalid JSON: #{error.message}")
+  end
+
+  UI.user_error!("Notion publication failed.") unless notion_result["success"] == true
+
+  release_page_url = notion_result["release_page_url"].to_s
+  UI.user_error!("Notion publication did not return a release page URL.") if release_page_url.empty?
+
+  assignees = notion_result.fetch("assignees", [])
+  unless assignees.is_a?(Array) && assignees.all? { |assignee| assignee.is_a?(String) }
+    UI.user_error!("Notion publication returned invalid assignees.")
+  end
+
+  # The publisher already separates backlog entries from shipped work, so pass
+  # them through untouched rather than re-parsing the release notes.
+  backlog = notion_result.fetch("backlog", [])
+  backlog = [] unless backlog.is_a?(Array)
+
+  run_release_notification_script(
+    "send_discord_release_notification.sh",
+    [
+      "--release-url", release_page_url,
+      "--assignees-json", JSON.generate(assignees.uniq),
+      "--backlog-json", JSON.generate(backlog),
+      "--platform", platform,
+      "--version", version,
+      "--build-number", build_number,
+      "--environment", environment
+    ]
+  )
+
+  UI.success("Notion release page: #{release_page_url}")
+  summary = notion_result.fetch("summary", {})
+  UI.message(
+    "Release summary: #{summary['features'].to_i} feature(s), " \
+    "#{summary['bugs'].to_i} bug(s), #{summary['backlog'].to_i} backlog item(s)."
+  )
+
+  {
+    release_page_url: release_page_url,
+    assignees: assignees,
+    backlog: backlog
+  }
+end
+
+# Extracts the body of a named Gradle Kotlin DSL block.
+def gradle_block_body(contents, block_start)
+  start_index = contents.index(block_start)
+  return nil if start_index.nil?
+
+  opening_brace_index = contents.index("{", start_index)
+  return nil if opening_brace_index.nil?
+
+  depth = 0
+  contents.each_char.with_index do |character, index|
+    next if index < opening_brace_index
+
+    depth += 1 if character == "{"
+    depth -= 1 if character == "}"
+    return contents[(opening_brace_index + 1)...index] if depth.zero?
+  end
+
+  nil
+end
+
+# Returns Android release metadata from the selected flavor and Gradle defaults.
+#
+# Replace this with the project's own source of truth when the build lane
+# already produces a version and build number; CI often overrides both.
+def android_release_metadata
+  gradle_path = File.join(__dir__, "..", "android", "app", "build.gradle.kts")
+  UI.user_error!("Android Gradle configuration not found: #{gradle_path}") unless File.file?(gradle_path)
+
+  gradle_contents = File.read(gradle_path)
+  flavor = ENV.fetch("FLAVOR")
+  default_config = gradle_block_body(gradle_contents, "defaultConfig")
+  flavor_config = gradle_block_body(gradle_contents, "create(\"#{flavor}\")")
+
+  UI.user_error!("Invalid Android Gradle configuration: defaultConfig block not found.") if default_config.nil?
+
+  build_number = default_config.match(/^\s*versionCode\s*=\s*(\d+)\s*$/)&.captures&.first
+  version = flavor_config&.match(/^\s*versionName\s*=\s*"([^"]+)"\s*$/)&.captures&.first ||
+            default_config.match(/^\s*versionName\s*=\s*"([^"]+)"\s*$/)&.captures&.first
+
+  UI.user_error!("Invalid Android Gradle configuration: versionCode not found.") if build_number.nil?
+  UI.user_error!("Invalid Android Gradle configuration: versionName not found for #{flavor}.") if version.nil?
+
+  {version: version, build_number: build_number}
+rescue KeyError => error
+  UI.user_error!("Invalid Android Gradle configuration: #{error.message}")
+end
+
+# Returns the Flutter entrypoint, preferring the project's pinned FVM version.
+def flutter_command
+  if File.exist?(File.join(__dir__, "..", ".fvmrc")) ||
+     File.exist?(File.join(__dir__, "..", ".fvm", "fvm_config.json"))
+    "fvm flutter"
+  else
+    "flutter"
+  end
+end
+
+before_all do |_lane, options|
+  UI.message("Running with environment: #{options[:env] || ENV['FLAVOR']}")
+end
+
+platform :android do
+  desc "Build the Android application."
+  lane :build do
+    flavor = ENV.fetch("FLAVOR")
+    sh(
+      "#{flutter_command} build apk --flavor #{flavor} " \
+      "--target lib/main.dart --dart-define FLAVOR=#{flavor}"
+    )
+  end
+
+  desc "Build, upload to Firebase App Distribution, then publish notifications."
+  lane :firebase_distribution do
+    latest_release = nil
+    begin
+      latest_release = firebase_app_distribution_get_latest_release(
+        app: ENV.fetch("FIREBASE_APP_ID"),
+        firebase_cli_token: ENV.fetch("FIREBASE_TOKEN")
+      )
+    rescue StandardError => error
+      UI.important("Could not fetch the latest release (normal for a first release): #{error.message}")
+    end
+
+    build_version = latest_release ? latest_release[:buildVersion].to_i + 1 : 1
+    increment_version_code(
+      gradle_file_path: "android/app/build.gradle.kts",
+      version_code: build_version
+    )
+    build
+
+    flavor = ENV.fetch("FLAVOR")
+    artifact_path = "build/app/outputs/apk/#{flavor}/release/app-#{flavor}-release.apk"
+    release_notes_path = File.expand_path("../release_notes.txt", __dir__)
+
+    firebase_app_distribution(
+      app: ENV.fetch("FIREBASE_APP_ID"),
+      android_artifact_path: artifact_path,
+      groups: ENV["GROUP_TESTERS"],
+      release_notes: "Release build #{build_version}\n\n#{File.read(release_notes_path)}",
+      firebase_cli_token: ENV.fetch("FIREBASE_TOKEN")
+    )
+
+    metadata = android_release_metadata
+    publish_release_notifications(
+      platform: "Android",
+      version: metadata.fetch(:version),
+      build_number: metadata.fetch(:build_number)
+    )
+  end
+
+  desc "Publish Notion and Discord notifications without rebuilding."
+  lane :publish_current_release_notifications do
+    metadata = android_release_metadata
+    publish_release_notifications(
+      platform: "Android",
+      version: metadata.fetch(:version),
+      build_number: metadata.fetch(:build_number)
+    )
+  end
+end
+
+platform :ios do
+  desc "Create an App Store Connect API key for authentication."
+  private_lane :app_store_api_key do
+    if ENV["ASC_KEY_FILEPATH"] && File.exist?(ENV["ASC_KEY_FILEPATH"])
+      app_store_connect_api_key(
+        key_id: ENV.fetch("ASC_KEY_ID"),
+        issuer_id: ENV.fetch("ASC_ISSUER_ID"),
+        key_filepath: ENV.fetch("ASC_KEY_FILEPATH"),
+        duration: 1200,
+        in_house: false
+      )
+    else
+      app_store_connect_api_key(
+        key_id: ENV.fetch("ASC_KEY_ID"),
+        issuer_id: ENV.fetch("ASC_ISSUER_ID"),
+        key_content: Base64.decode64(ENV.fetch("ASC_KEY_CONTENT")),
+        duration: 1200,
+        in_house: false
+      )
+    end
+  end
+
+  desc "Build and upload to TestFlight, then publish notifications."
+  lane :testflight_distribution do
+    api_key = app_store_api_key
+    bundle_identifier = ENV.fetch("BUNDLE_IDENTIFIER")
+
+    latest_build_number = begin
+      latest_testflight_build_number(api_key: api_key, app_identifier: bundle_identifier)
+    rescue StandardError => error
+      UI.important("Could not fetch the latest TestFlight build (normal for a first release): #{error.message}")
+      nil
+    end
+
+    new_build_number = latest_build_number ? latest_build_number.to_i + 1 : 1
+    increment_build_number(build_number: new_build_number, xcodeproj: "ios/Runner.xcodeproj")
+
+    ipa_path = build_app(
+      scheme: ENV.fetch("FLAVOR"),
+      export_method: "app-store",
+      workspace: "ios/Runner.xcworkspace",
+      include_symbols: true
+    )
+
+    upload_to_testflight(
+      api_key: api_key,
+      app_identifier: bundle_identifier,
+      ipa: ipa_path,
+      skip_waiting_for_build_processing: false
+    )
+
+    publish_release_notifications(
+      platform: "iOS",
+      version: get_version_number(xcodeproj: "ios/Runner.xcodeproj", target: "Runner"),
+      build_number: get_build_number(xcodeproj: "ios/Runner.xcodeproj")
+    )
+  end
+
+  desc "Publish Notion and Discord notifications without rebuilding."
+  lane :publish_current_release_notifications do
+    publish_release_notifications(
+      platform: "iOS",
+      version: get_version_number(xcodeproj: "ios/Runner.xcodeproj", target: "Runner"),
+      build_number: get_build_number(xcodeproj: "ios/Runner.xcodeproj")
+    )
+  end
+end

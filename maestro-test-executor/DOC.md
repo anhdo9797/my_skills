@@ -37,12 +37,15 @@ mindmap
       visual-review.md
       reporting.md
       maestro_commands.md
+      ui-metrics.md [exact vs relative contract]
     Scripts
       filter_hierarchy.py
       compare_screenshots.py
       grid_overlay.py
       pair_view.py
       spacing_audit.py
+      typography_audit.py
+      text_audit.py
 ```
 
 ---
@@ -182,22 +185,30 @@ flowchart LR
 ```mermaid
 flowchart TD
     S(["report/screenshots/TC-XXX_state.png"]) --> MODE{Design reference\navailable?}
+    H(["maestro hierarchy > /tmp/TC-XXX.json"]) --> TA["text_audit.py --expected …_expected.json\nEXACT string equality, no tolerance\n→ names each difference: diacritics / casing /\nwhitespace / punctuation / truncated / wording\n+ defects: leaked i18n key, off-screen bounds\n= CONTENT (Class A)"]
+    TA --> TXT["→ report/text/TC-XXX_state.json\nany mismatch or defect = CRITICAL"]
 
     MODE -- "No (heuristic)" --> G["grid_overlay.py --cols 6 --rows 13\n→ report/grid/TC-XXX_state-grid.png"]
     G --> SCAN["🔍 Scan cell by cell\n(heuristic checklist)"]
 
     MODE -- "Yes (design mode)" --> PV["pair_view.py design.png actual.png\n--crop-actual-top/--bottom (strips chrome\nso cell addresses ACTUALLY align)\n→ diffs pixels → flags cells over threshold\n→ ONE side-by-side composite\n= CONTENT / PRESENCE / STYLE"]
     MODE -- "Yes (design mode)" --> SA["spacing_audit.py design.png actual.png\nscales by WIDTH ONLY (vertical error survives)\n→ segments both into element bands\n→ MEASURES every gap / height / margin in design px-dp\n= GEOMETRY"]
+    MODE -- "Yes (design mode)" --> TY["typography_audit.py design.png actual.png\nmeasures x-height + stroke÷x-height per band\n→ ratio vs DESIGN and vs the screen's OWN body text\n→ widens tolerance to the precision inputs support\n= FONT SIZE / FONT WEIGHT"]
     D(["report/figma/TC-XXX_state.png"]) -.-> PV
     D -.-> SA
+    D -.-> TY
     PV --> PAIR["→ report/grid/TC-XXX_state-pair.png"]
     SA --> SPC["→ report/grid/TC-XXX_state-spacing.png\n+ JSON: systematic_gap_ratio, gaps[],\nband_heights[], margin_deviations[]"]
+    TY --> TYP["→ report/grid/TC-XXX_state-type.png\n+ JSON: systematic_size_ratio, bands[].reasons,\nweight_confidence, size_tolerance_used,\nresolution_note"]
     SPC --> SCAN0["📏 Account for every flagged GAP first\n+ check systematic_gap_ratio\n(one ratio across most gaps = ONE finding)"]
+    TYP --> SCANT["🔤 Account for every flagged BAND\n+ check systematic_size_ratio\n(whole type scale off = ONE finding)"]
     PAIR --> SCAN2["🔍 Account for every flagged cell first\n(measured, can't skip)\n→ finish checklist scan on the rest"]
 
     SCAN --> EXCL{"Difference is\ndata-driven?\n(item count, names,\nphotos, badges)"}
     SCAN2 --> EXCL
     SCAN0 --> EXCL
+    SCANT --> EXCL
+    TXT --> SEV
     EXCL -- Yes --> NOTE["Exclude + note it\n(NOT a defect)"]
     EXCL -- No --> SEV{Severity?}
 
@@ -220,16 +231,22 @@ flowchart TD
     style PV fill:#7950F2,color:#fff
     style SCAN2 fill:#7950F2,color:#fff
     style SA fill:#1971C2,color:#fff
+    style TY fill:#1971C2,color:#fff
+    style TYP fill:#1971C2,color:#fff
+    style SCANT fill:#1971C2,color:#fff
+    style TA fill:#0B7285,color:#fff
+    style TXT fill:#0B7285,color:#fff
     style SPC fill:#1971C2,color:#fff
     style SCAN0 fill:#1971C2,color:#fff
     style MODE fill:#1C2333,color:#fff
 ```
 
-> **Four rules keep Tier 3 trustworthy.**
+> **Five rules keep Tier 3 trustworthy.**
 > 1. *Cell addresses must actually align.* A chrome-less design export gridded independently from a real device screenshot puts the same cell id over different content in each, so design mode always crops the screenshot's chrome first (`pair_view.py`) before comparing.
 > 2. *Measure the geometry; never read spacing off the pixel diff.* `pair_view.py` resizes the design onto the screenshot's width **and** height to align cells — which rescales the design's vertical rhythm onto the device's, so uniformly inflated padding diffs clean, and when the aspect ratios differ it suppresses its own flags entirely. A screen with every gap 30% too big passes both stages. `spacing_audit.py` scales by width only and measures gaps/heights/margins in design px-dp; a `systematic_gap_ratio` outside tolerance is **one** Critical finding with one root cause, not fifteen.
-> 3. *Vision estimates; a script measures.* Never claim a `dp` value by looking — but do quote the one `spacing_audit.py` measured. What still can't come from a screenshot at all is a `fontSize`/token *value*; that's a 🔍 REVIEW note.
-> 4. *Data state is not design state.* The app showing 3 items where the design shows 6 is the user's data, not a defect — in the spacing table these surface as `unmatched_*` bands and `comparable: false` gaps, and they stay out of the spacing verdict.
+> 3. *Vision estimates; a script measures; the hierarchy reads.* Three instruments, three jobs. Text comes from the **view hierarchy** and is compared exactly — never transcribed from pixels, where OCR quietly mangles the diacritics that matter most. Spacing, font size, and font weight come from the **audit scripts** as ratios — never estimated by eye, and never softened once measured. What's left for **vision** is what nothing measures: clipping, overlap, wrong state, whether text is actually readable, a colour impression. Quote a number only when a script produced it; label everything else "estimate" and mark it 🔍 REVIEW.
+> 4. *Relative for geometry and type; exact for text.* A screenshot contains no `dp` and no `sp` — every absolute pixel value is an artefact of which device and which export you happened to have. So spacing, size, and weight are compared as **ratios** (against the design, and against the screen's own body text), inside a tolerance band. Text has no tolerance at all: one wrong character is a Critical defect. Export the design near the device's scale — at 1x-vs-3x the audits must widen their tolerance and a one-step font-size bug hides under it.
+> 5. *Data state is not design state.* The app showing 3 items where the design shows 6 is the user's data, not a defect — in the spacing table these surface as `unmatched_*` bands and `comparable: false` gaps, and they stay out of the spacing verdict.
 >
 > Bias **Minor** when genuinely uncertain: a false Critical erodes trust faster than a missed nitpick. But a measurement outside tolerance isn't uncertainty — don't soften it into 🔍 REVIEW.
 
@@ -319,7 +336,8 @@ mindmap
           TC-010.png
           TC-010.masks.json
         diff/ [heatmaps on Tier 2 failure]
-        grid/ [what Tier 3 vision reads: -grid.png (heuristic) or -pair.png (design mode)]
+        grid/ [what Tier 3 vision reads: -grid.png (heuristic), or -pair.png / -spacing.png / -type.png (design mode)]
+        text/ [text_audit.py results: exact-string comparison JSON]
         vision/ [Tier 3 annotated results - defect cells washed red]
         YYYY-MM-DD_HHmm/ [maestro --test-output-dir logs, one dir per run]
 ```
@@ -399,6 +417,7 @@ flowchart TD
 | Need an unknown selector | `references/selectors-and-inspection.md` |
 | Write / fix a YAML flow | `references/yaml-flows.md` |
 | Choose a UI tier; author assertions + baseline from a design | `references/ui-validation.md` |
+| **Decide what a UI case may assert and how precisely (exact vs relative, tolerances, verdict)** | `references/ui-metrics.md` |
 | Judge a screen from its screenshot (grid, cell scan, severity → verdict) | `references/visual-review.md` |
 | Produce / update the report, or resume a session | `references/reporting.md` |
 | Find the right Maestro command | `references/maestro_commands.md` |
@@ -407,6 +426,8 @@ flowchart TD
 | Grid a screenshot / mark defect cells red (Tier 3, heuristic + final report image) | `scripts/grid_overlay.py` |
 | Chrome-align + diff a design vs. a screenshot into one composite (Tier 3, design mode) | `scripts/pair_view.py` |
 | **Measure** gaps / element heights / side margins vs. a design, in design px-dp (Tier 3, design mode) | `scripts/spacing_audit.py` |
+| **Measure** font size + font weight as ratios vs. a design and vs. the screen's own body text (Tier 3, design mode) | `scripts/typography_audit.py` |
+| **Compare on-screen text exactly** against the expected copy, from the view hierarchy (Tier 3, any mode) | `scripts/text_audit.py` |
 
 ---
 
@@ -429,7 +450,13 @@ flowchart TD
 | Conclude "spacing matches" from a clean `pair_view.py` diff | It never looked — aligning cells needs a resize on both axes, which normalizes inflated padding away, and its flags self-suppress when the aspect ratios differ. Run `spacing_audit.py` |
 | Report a spacing deviation as "looks tight/loose" for a human to judge | Unactionable, and it files a real single-token layout bug as polish. Quote the measurement ("gap 24→32 design px, +33%") and treat out-of-tolerance as Critical |
 | Wash cells red on a hunch | Highlight only visible evidence; estimates stay text notes |
-| Claim `24dp` / `16sp` from a screenshot | Vision estimates, never measures → 🔍 REVIEW |
+| Claim a `dp` / `sp` value no script measured | Vision estimates, never measures — quote the audit's number or label it "estimate" → 🔍 REVIEW |
+| Read text content off the screenshot | That's OCR — it mangles diacritics. `text_audit.py` against the view hierarchy, compared character for character |
+| Pass a text case because the hierarchy has the right string | The hierarchy proves *correct*, not *visible* — an ellipsized label still reports its full text. Both checks are needed |
+| File a wrong string as Minor because it's "one character" | Text is exact-match; a missing diacritic changes the word → Critical |
+| Report fontSize / fontWeight as an impression, or skip them as unmeasurable | `typography_audit.py` measures both as ratios; out of tolerance is Critical, with the number quoted |
+| Compare a 1x design export against a 3x screenshot and trust the tolerance | The audit widens its tolerance to absorb the resolution bias, so a real one-step size bug hides. Re-export at 2x/3x |
+| Quote a number from an `INCONCLUSIVE` audit | Bad segmentation makes every downstream number meaningless. Fix the inputs, or say so and fall back to visual review |
 | Force a Minor visual finding into PASS or FAIL | 🔍 REVIEW — evidence captured, human decides |
 | Re-inspect the same screen repeatedly | Persist to `selectors.md`, read it back |
 | Index-based selector | `id`, `testId`, or `text` |

@@ -211,8 +211,16 @@ def segment(profile, ink_threshold, min_band, min_gap):
     return [b for b in merged if b[1] - b[0] >= min_band]
 
 
-def align(bands_d, bands_a):
+def align(bands_d, bands_a, height_weight=0.65):
     """Order-preserving alignment allowing skips on either side.
+
+    `height_weight` trades the two signals off. Height dominates by default,
+    which suits comparing layout blocks. It is the wrong balance when height
+    itself is the thing under test: an element that renders at the wrong size
+    looks less like its own counterpart than like some *other* element that
+    happens to match its intended size, so the pairing quietly moves and the
+    defect is reported against the wrong element. Callers measuring size should
+    lean on position instead, which no size bug disturbs.
 
     Real screens rarely contain exactly the mockup's data, so a strict 1:1
     pairing would either fail outright or silently pair the wrong elements —
@@ -232,7 +240,9 @@ def align(bands_d, bands_a):
         height = abs(hd - ha) / max(hd, ha, 1)
         pos_d = (bands_d[i][0] - origin_d) / span_d
         pos_a = (bands_a[j][0] - origin_a) / span_a
-        return 0.65 * min(1.0, height) + 0.35 * min(1.0, abs(pos_d - pos_a) * 2.5)
+        pos_weight = 1.0 - height_weight
+        return (height_weight * min(1.0, height)
+                + pos_weight * min(1.0, abs(pos_d - pos_a) * 2.5))
 
     skip = 0.55
     n, m = len(bands_d), len(bands_a)
@@ -344,6 +354,11 @@ def main():
     ap.add_argument("--gap-tolerance-pct", type=float, default=0.18,
                     help="relative slack per gap (default 0.18 = 18%%). A gap is flagged "
                          "only when it exceeds BOTH tolerances.")
+    ap.add_argument("--height-tolerance-px", type=float, default=4.0,
+                    help="absolute slack on a band's height in design px (default 4)")
+    ap.add_argument("--height-tolerance-pct", type=float, default=0.18,
+                    help="relative slack on a band's height (default 0.18 = 18%%). A "
+                         "height is flagged only when it exceeds BOTH tolerances.")
     ap.add_argument("--margin-tolerance-px", type=float, default=4.0,
                     help="slack on a band's left/right ink extent in design px (default 4)")
     args = ap.parse_args()
@@ -444,17 +459,23 @@ def main():
 
     # Band heights: catches a control that renders taller/shorter than designed
     # (font scale, image box, button height) as opposed to the space around it.
-    band_rows = []
+    band_rows, flagged_heights = [], []
     for n, (i, j) in enumerate(pairs, start=1):
         hd = bands_d[i][1] - bands_d[i][0]
         ha = bands_a[j][1] - bands_a[j][0]
         delta = ha - hd
+        over = abs(delta) > args.height_tolerance_px and (
+            hd == 0 or abs(delta) / hd > args.height_tolerance_pct)
+        if over:
+            flagged_heights.append(f"B{n}")
         band_rows.append({
             "band": f"B{n}",
             "design": dp(hd),
             "actual": dp(ha),
             "delta": dp(delta),
             "delta_pct": round(delta / hd * 100, 1) if hd else None,
+            "ratio": round(ha / hd, 3) if hd else None,
+            "flagged": over,
         })
 
     # Gaps are only comparable when the two bands bounding them are adjacent in
@@ -513,6 +534,11 @@ def main():
                 "left_delta": dp(left_delta),
                 "design_right": dp(unit_w - ed[1]), "actual_right": dp(unit_w - ea[1]),
                 "right_delta": dp(right_delta),
+                # Only out-of-tolerance rows are emitted at all, but the flag is
+                # stated rather than implied: a reader (or the report) should not
+                # have to infer a verdict from a list's mere existence, and the
+                # field name has to match `gaps[]` so one rule reads both.
+                "flagged": True,
             })
 
     unit = "dp" if px_to_dp != 1.0 else "px"
@@ -566,13 +592,45 @@ def main():
         "unmatched_actual": [labels_a[j] for j in range(len(bands_a))
                              if j not in matched_a],
         "systematic_gap_ratio": round(systematic, 3) if systematic else None,
+        "comparable_gap_count": len(ratios),
         "flagged_gap_count": len(flagged),
+        "flagged_height_count": len(flagged_heights),
+        "flagged_margin_count": len(margin_rows),
         "gaps": gap_rows,
         "band_heights": band_rows,
         "margin_deviations": margin_rows,
+        "tolerances": {
+            "gap_px": args.gap_tolerance_px, "gap_pct": args.gap_tolerance_pct,
+            "height_px": args.height_tolerance_px,
+            "height_pct": args.height_tolerance_pct,
+            "margin_px": args.margin_tolerance_px,
+            "note": "a gap or height is flagged only when it exceeds BOTH its "
+                    "absolute and its relative tolerance; a margin uses the "
+                    "absolute one alone",
+        },
     }
 
-    if systematic and abs(systematic - 1.0) > args.gap_tolerance_pct:
+    # The inconclusive guard runs FIRST. It used to sit at the end of the chain,
+    # where it could never fire: a run with one comparable gap took the
+    # systematic branch and announced that spacing was "systematically 41%
+    # smaller across 1 comparable gaps" — a single observation reported with the
+    # authority of a pattern. Evidence sufficiency has to be settled before any
+    # branch gets to make a claim, not after.
+    if len(pairs) < 3:
+        summary["verdict"] = (
+            f"INCONCLUSIVE: only {len(pairs)} band(s) matched, too few to judge "
+            "spacing. The screen may be full-bleed (no empty rows to segment), the "
+            "crops may be wrong, or the data states differ too much. Check the PNG, "
+            "then adjust --crop-*/--roi-*/--min-gap, or fall back to visual review."
+        )
+        if flagged or flagged_heights or margin_rows:
+            summary["verdict"] += (
+                f" Individual measurements did exceed tolerance "
+                f"({len(flagged)} gap, {len(flagged_heights)} height, "
+                f"{len(margin_rows)} margin) — treat each as a lead to confirm on a "
+                f"sounder segmentation, not as a verdict."
+            )
+    elif systematic and len(ratios) >= 3 and abs(systematic - 1.0) > args.gap_tolerance_pct:
         direction = "larger" if systematic > 1 else "smaller"
         summary["verdict"] = (
             f"SPACING DEVIATION: gaps on the device are systematically "
@@ -582,22 +640,27 @@ def main():
             "theme token rather than many independent mistakes — report it as one "
             "finding with the per-gap table as evidence."
         )
-    elif flagged:
+    elif flagged or flagged_heights or margin_rows:
+        parts = []
+        if flagged:
+            parts.append(f"{len(flagged)} gap(s)")
+        if flagged_heights:
+            parts.append(f"{len(flagged_heights)} band height(s) "
+                         f"({', '.join(flagged_heights)})")
+        if margin_rows:
+            parts.append(f"{len(margin_rows)} side margin(s) "
+                         f"({', '.join(r['band'] for r in margin_rows)})")
         summary["verdict"] = (
-            f"{len(flagged)} individual gap(s) outside tolerance while overall rhythm "
-            "matches — localized spacing bug, see `gaps` for which."
-        )
-    elif len(pairs) < 3:
-        summary["verdict"] = (
-            f"INCONCLUSIVE: only {len(pairs)} band(s) matched, too few to judge "
-            "spacing. The screen may be full-bleed (no empty rows to segment), the "
-            "crops may be wrong, or the data states differ too much. Check the PNG, "
-            "then adjust --crop-*/--roi-*/--min-gap, or fall back to visual review."
+            f"{' + '.join(parts)} outside tolerance while overall rhythm matches — "
+            "localized geometry bug. A flagged HEIGHT means the element itself is the "
+            "wrong size; a flagged GAP means the space around it is. Those are "
+            "different fixes, so read which one fired before writing the finding."
         )
     else:
         summary["verdict"] = (
-            f"Spacing within tolerance across {len(ratios)} comparable gaps "
-            f"(median ratio {systematic:.2f})." if ratios else
+            f"Spacing, band heights and side margins within tolerance across "
+            f"{len(ratios)} comparable gaps and {len(pairs)} matched bands "
+            f"(median gap ratio {systematic:.2f})." if ratios else
             "No comparable gaps found."
         )
 

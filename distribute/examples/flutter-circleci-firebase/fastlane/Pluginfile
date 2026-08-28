@@ -1,0 +1,6 @@
+# Fastlane plugins used by the reference lanes.
+#
+# Keep only the plugins the project's own lanes actually call.
+
+gem "fastlane-plugin-firebase_app_distribution"
+gem "fastlane-plugin-increment_version_code"

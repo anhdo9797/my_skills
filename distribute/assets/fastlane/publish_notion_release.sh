@@ -49,6 +49,8 @@ PUBLISHED_AT=""
 
 FEATURE_TEXTS=()
 BUG_TEXTS=()
+BACKLOG_TEXTS=()
+EXTRA_LINES=()
 ITEM_TYPES=()
 ITEM_ORIGINAL_TEXTS=()
 ITEM_LOOKUP_KEYS=()
@@ -77,7 +79,8 @@ usage() {
     "Usage: fastlane/publish_notion_release.sh [options]" \
     "" \
     "Options:" \
-    "  --input <path>           Release-note file (default: release_notes.txt)" \
+    "  --input <path>           Release-note file with Feature, Bug, and" \
+    "                           Backlog sections (default: release_notes.txt)" \
     "  --platform <iOS|Android> Override Platform metadata" \
     "  --version <value>        Override Version metadata" \
     "  --build-number <value>   Override Build metadata" \
@@ -291,6 +294,58 @@ escape_markdown_text() {
     -e 's/\]/\\]/g'
 }
 
+# Map a release-note heading to a known section key.
+#
+# Teams write the same three sections in several ways (with or without an emoji,
+# singular or plural, English or Vietnamese). Recognizing the variants keeps a
+# release publishable instead of failing on a cosmetic difference.
+section_key_from_heading() {
+  local heading=""
+
+  heading="$(trim_text "${1%:}")"
+  heading="$(printf '%s' "$heading" | tr '[:upper:]' '[:lower:]')"
+  heading="${heading#"${heading%%[[:alnum:]]*}"}"
+  heading="$(trim_text "$heading")"
+
+  case "$heading" in
+    feature|features|"new feature"|"new features"|\
+    "tính năng"|"tính năng mới")
+      printf 'features'
+      ;;
+    bug|bugs|"bug fixed"|"bugs fixed"|"bug fixes"|bugfix|bugfixes|fixed|\
+    "lỗi"|"sửa lỗi"|"lỗi đã sửa")
+      printf 'bugs'
+      ;;
+    backlog|backlogs|pending|todo|"to do"|\
+    "tồn đọng"|"chưa hoàn thành")
+      printf 'backlog'
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+# Return success when a bullet only says "there is nothing in this section".
+#
+# A placeholder is not a task, so looking it up in Notion would report a missing
+# task for a section the team deliberately left empty.
+is_placeholder_item() {
+  local value=""
+
+  value="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  value="$(trim_text "${value%.}")"
+
+  case "$value" in
+    ""|"-"|"--"|"n/a"|"n\\a"|na|none|no|nothing|tbd|x|empty|null|\
+    "không"|khong|"không có"|"khong co"|"không có gì"|"trống"|"trong")
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
 # Parse CLI options without reading secrets from files.
 parse_arguments() {
   while (($# > 0)); do
@@ -331,21 +386,28 @@ parse_arguments() {
   done
 }
 
-# Read metadata and the Features/Bug Fixed sections from a UTF-8 file.
+# Read metadata and the Feature, Bug, and Backlog sections from a UTF-8 file.
+#
+# Parsing stays deliberately forgiving. A build that shipped is worth recording
+# even when a section is empty, holds a "none" placeholder, or the team added a
+# heading this script does not know. Unknown content is carried through to the
+# Notion page verbatim rather than aborting the release.
 parse_release_notes() {
   local file_path="$1"
   local section=""
+  local section_candidate=""
   local line=""
   local trimmed_line=""
+  local heading_text=""
   local original_text=""
-  local found_features=false
-  local found_bugs=false
 
   [[ -f "$file_path" ]] || emit_error \
     "INVALID_RELEASE_NOTE" "Release-note file not found: $file_path"
 
   FEATURE_TEXTS=()
   BUG_TEXTS=()
+  BACKLOG_TEXTS=()
+  EXTRA_LINES=()
   RELEASE_PLATFORM=""
   RELEASE_VERSION=""
   RELEASE_BUILD_NUMBER=""
@@ -356,21 +418,25 @@ parse_release_notes() {
     trimmed_line="$(trim_text "$line")"
     [[ -z "$trimmed_line" ]] && continue
 
-    case "$trimmed_line" in
-      "🧩 Features:"|"Features:")
-        section="features"
-        found_features=true
+    if [[ "$trimmed_line" != "- "* && "$trimmed_line" == *: ]]; then
+      if section_candidate="$(section_key_from_heading "$trimmed_line")"; then
+        section="$section_candidate"
         continue
-        ;;
-      "🐞 Bug Fixed:"|"Bug Fixed:")
-        section="bugs"
-        found_bugs=true
-        continue
-        ;;
-    esac
+      fi
+
+      heading_text="$(trim_text "${trimmed_line%:}")"
+      section="extra"
+      log_warning "Unknown release-note heading kept as plain text: $heading_text"
+      EXTRA_LINES[${#EXTRA_LINES[@]}]="**$(escape_markdown_text "$heading_text")**"
+      continue
+    fi
 
     if [[ -z "$section" ]]; then
       case "$trimmed_line" in
+        "- "*)
+          log_warning "Bullet before the first section kept as plain text: $trimmed_line"
+          EXTRA_LINES[${#EXTRA_LINES[@]}]="- $(escape_markdown_text "${trimmed_line#- }")"
+          ;;
         *"Platform:"*)
           RELEASE_PLATFORM="$(trim_text "${trimmed_line##*Platform:}")"
           ;;
@@ -383,41 +449,41 @@ parse_release_notes() {
         *"Environment:"*)
           RELEASE_ENVIRONMENT="$(trim_text "${trimmed_line##*Environment:}")"
           ;;
-        "- "*)
-          emit_error "INVALID_RELEASE_NOTE" \
-            "A bullet item appears outside Features or Bug Fixed."
-          ;;
       esac
       continue
     fi
 
-    if [[ "$trimmed_line" == *: && "$section" == "bugs" ]]; then
-      section=""
+    if [[ "$trimmed_line" != "- "* ]]; then
+      log_warning "Non-bullet line inside the $section section kept as plain text."
+      EXTRA_LINES[${#EXTRA_LINES[@]}]="$(escape_markdown_text "$trimmed_line")"
       continue
     fi
 
-    if [[ "$trimmed_line" != "- "* ]]; then
-      emit_error "INVALID_RELEASE_NOTE" \
-        "Every non-empty line inside a release section must start with '- '." \
-        "$trimmed_line"
+    original_text="$(trim_text "${trimmed_line#- }")"
+    if is_placeholder_item "$original_text"; then
+      log_info "Empty $section entry skipped: ${original_text:-<blank>}"
+      continue
     fi
 
-    original_text="${trimmed_line#- }"
-    [[ -n "$original_text" ]] || emit_error \
-      "INVALID_RELEASE_NOTE" "Release-note bullet text cannot be empty."
-
-    if [[ "$section" == "features" ]]; then
-      FEATURE_TEXTS[${#FEATURE_TEXTS[@]}]="$original_text"
-    else
-      BUG_TEXTS[${#BUG_TEXTS[@]}]="$original_text"
-    fi
+    case "$section" in
+      features)
+        FEATURE_TEXTS[${#FEATURE_TEXTS[@]}]="$original_text"
+        ;;
+      bugs)
+        BUG_TEXTS[${#BUG_TEXTS[@]}]="$original_text"
+        ;;
+      backlog)
+        BACKLOG_TEXTS[${#BACKLOG_TEXTS[@]}]="$original_text"
+        ;;
+      *)
+        EXTRA_LINES[${#EXTRA_LINES[@]}]="- $(escape_markdown_text "$original_text")"
+        ;;
+    esac
   done < "$file_path"
 
-  [[ "$found_features" == true && "$found_bugs" == true ]] || emit_error \
-    "INVALID_RELEASE_NOTE" "Both Features and Bug Fixed sections are required."
-
-  if ((${#FEATURE_TEXTS[@]} + ${#BUG_TEXTS[@]} == 0)); then
-    emit_error "INVALID_RELEASE_NOTE" "At least one release-note item is required."
+  if ((${#FEATURE_TEXTS[@]} + ${#BUG_TEXTS[@]} + ${#BACKLOG_TEXTS[@]} + \
+    ${#EXTRA_LINES[@]} == 0)); then
+    log_warning "No release-note items found; publishing build information only."
   fi
 }
 
@@ -740,7 +806,9 @@ append_result_item() {
 
   if [[ "$status" == "resolved" ]]; then
     RESOLVED_COUNT=$((RESOLVED_COUNT + 1))
-    merge_assignees "$assignees_json"
+    # Backlog work ships in a later build. Pinging its owners here would ask the
+    # wrong people to verify the build that is being announced.
+    [[ "$item_type" == "backlog" ]] || merge_assignees "$assignees_json"
   else
     UNRESOLVED_COUNT=$((UNRESOLVED_COUNT + 1))
   fi
@@ -758,7 +826,49 @@ append_unresolved_item() {
     "" "" "unresolved"
 }
 
-# Resolve every feature and bug while retaining missing tasks as plain text.
+# Resolve one task-like item against a data source and record the outcome.
+#
+# Features and backlog entries share this path: both are task titles that may or
+# may not exist in Notion, and neither should stop a release when the lookup
+# comes back empty.
+resolve_task_item() {
+  local item_type="$1"
+  local original_text="$2"
+  local data_source_id="$3"
+  local primary_key=""
+  local fallback_key=""
+
+  primary_key="$(feature_lookup_key "$original_text")"
+  if [[ -z "$primary_key" ]]; then
+    append_unresolved_item "$item_type" "$original_text" "" "invalid_lookup_key"
+    return 0
+  fi
+
+  if query_data_source "$data_source_id" "$primary_key"; then
+    append_result_item "$item_type" "$original_text" "$primary_key" \
+      "$RESOLVED_PAGE_ID" "$RESOLVED_PAGE_URL" "resolved" \
+      "$RESOLVED_ASSIGNEES_JSON"
+    return 0
+  fi
+
+  fallback_key="$primary_key"
+  if [[ "$LOOKUP_STATUS" == "not_found" ]]; then
+    fallback_key="$(feature_fallback_key "$primary_key")"
+  fi
+
+  if [[ "$LOOKUP_STATUS" == "not_found" && "$fallback_key" != "$primary_key" ]] && \
+    query_data_source "$data_source_id" "$fallback_key"; then
+    append_result_item "$item_type" "$original_text" "$fallback_key" \
+      "$RESOLVED_PAGE_ID" "$RESOLVED_PAGE_URL" "resolved" \
+      "$RESOLVED_ASSIGNEES_JSON"
+    return 0
+  fi
+
+  append_unresolved_item "$item_type" "$original_text" "$fallback_key" \
+    "$LOOKUP_STATUS"
+}
+
+# Resolve every feature, bug, and backlog entry, keeping missing tasks as text.
 resolve_all_items() {
   local index=0
   local original_text=""
@@ -778,36 +888,7 @@ resolve_all_items() {
 
   index=0
   while ((index < ${#FEATURE_TEXTS[@]})); do
-    original_text="${FEATURE_TEXTS[$index]}"
-    primary_key="$(feature_lookup_key "$original_text")"
-    [[ -n "$primary_key" ]] || emit_error \
-      "INVALID_RELEASE_NOTE" "Feature lookup key cannot be empty."
-
-    if query_data_source "$TASK_DATA_SOURCE_ID" "$primary_key"; then
-      append_result_item "feature" "$original_text" "$primary_key" \
-        "$RESOLVED_PAGE_ID" "$RESOLVED_PAGE_URL" "resolved" \
-        "$RESOLVED_ASSIGNEES_JSON"
-    else
-      fallback_key="$primary_key"
-      if [[ "$LOOKUP_STATUS" == "not_found" ]]; then
-        fallback_key="$(feature_fallback_key "$primary_key")"
-      fi
-
-      if [[ "$LOOKUP_STATUS" == "not_found" && \
-        "$fallback_key" != "$primary_key" ]]; then
-        if query_data_source "$TASK_DATA_SOURCE_ID" "$fallback_key"; then
-          append_result_item "feature" "$original_text" "$fallback_key" \
-            "$RESOLVED_PAGE_ID" "$RESOLVED_PAGE_URL" "resolved" \
-            "$RESOLVED_ASSIGNEES_JSON"
-        else
-          append_unresolved_item "feature" "$original_text" "$fallback_key" \
-            "$LOOKUP_STATUS"
-        fi
-      else
-        append_unresolved_item "feature" "$original_text" "$fallback_key" \
-          "$LOOKUP_STATUS"
-      fi
-    fi
+    resolve_task_item "feature" "${FEATURE_TEXTS[$index]}" "$TASK_DATA_SOURCE_ID"
     index=$((index + 1))
   done
 
@@ -854,13 +935,45 @@ resolve_all_items() {
     fi
     index=$((index + 1))
   done
+
+  index=0
+  while ((index < ${#BACKLOG_TEXTS[@]})); do
+    resolve_task_item "backlog" "${BACKLOG_TEXTS[$index]}" "$TASK_DATA_SOURCE_ID"
+    index=$((index + 1))
+  done
+}
+
+# Render one release section, or nothing when the section has no items.
+#
+# Empty headings make a release page look like data went missing, so a section
+# that resolved to zero items is left out entirely.
+render_markdown_section() {
+  local heading="$1"
+  local item_type="$2"
+  local section_markdown=""
+  local escaped_text=""
+  local index=0
+
+  while ((index < ${#ITEM_TYPES[@]})); do
+    if [[ "${ITEM_TYPES[$index]}" == "$item_type" ]]; then
+      escaped_text="$(escape_markdown_text "${ITEM_ORIGINAL_TEXTS[$index]}")"
+      if [[ "${ITEM_STATUSES[$index]}" == "resolved" ]]; then
+        section_markdown+="- [$escaped_text](${ITEM_URLS[$index]})"$'\n'
+      else
+        section_markdown+="- $escaped_text"$'\n'
+      fi
+    fi
+    index=$((index + 1))
+  done
+
+  [[ -n "$section_markdown" ]] || return 0
+  printf '\n\n## %s\n\n%s' "$heading" "$section_markdown"
 }
 
 # Render the final Notion-flavored Markdown body.
 render_release_markdown() {
   local markdown=""
   local index=0
-  local escaped_text=""
   local escaped_platform=""
   local escaped_environment=""
   local escaped_version=""
@@ -884,38 +997,21 @@ render_release_markdown() {
   markdown+="- **Build:** $escaped_build"
   markdown+=$'\n'
   markdown+="- **Published at:** $PUBLISHED_AT"
-  markdown+=$'\n\n## 🧩 Features\n\n'
 
-  index=0
-  while ((index < ${#ITEM_TYPES[@]})); do
-    if [[ "${ITEM_TYPES[$index]}" == "feature" ]]; then
-      escaped_text="$(escape_markdown_text "${ITEM_ORIGINAL_TEXTS[$index]}")"
-      if [[ "${ITEM_STATUSES[$index]}" == "resolved" ]]; then
-        markdown+="- [$escaped_text](${ITEM_URLS[$index]})"
-      else
-        markdown+="- $escaped_text"
-      fi
-      markdown+=$'\n'
-    fi
-    index=$((index + 1))
-  done
+  markdown+="$(render_markdown_section "🧩 Features" "feature")"
+  markdown+="$(render_markdown_section "🐞 Bug Fixed" "bug")"
+  markdown+="$(render_markdown_section "📌 Backlog" "backlog")"
 
-  markdown+=$'\n## 🐞 Bug Fixed\n\n'
-  index=0
-  while ((index < ${#ITEM_TYPES[@]})); do
-    if [[ "${ITEM_TYPES[$index]}" == "bug" ]]; then
-      escaped_text="$(escape_markdown_text "${ITEM_ORIGINAL_TEXTS[$index]}")"
-      if [[ "${ITEM_STATUSES[$index]}" == "resolved" ]]; then
-        markdown+="- [$escaped_text](${ITEM_URLS[$index]})"
-      else
-        markdown+="- $escaped_text"
-      fi
-      markdown+=$'\n'
-    fi
-    index=$((index + 1))
-  done
+  if ((${#EXTRA_LINES[@]} > 0)); then
+    markdown+=$'\n\n## 📝 Other notes\n\n'
+    index=0
+    while ((index < ${#EXTRA_LINES[@]})); do
+      markdown+="${EXTRA_LINES[$index]}"$'\n'
+      index=$((index + 1))
+    done
+  fi
 
-  printf '%s' "$markdown"
+  printf '%s\n' "$markdown"
 }
 
 # Build the release page title from reusable project configuration and metadata.
@@ -1005,6 +1101,7 @@ emit_success_result() {
     --arg release_page_url "$RELEASE_PAGE_URL" \
     --argjson features "${#FEATURE_TEXTS[@]}" \
     --argjson bugs "${#BUG_TEXTS[@]}" \
+    --argjson backlog "${#BACKLOG_TEXTS[@]}" \
     --argjson resolved "$RESOLVED_COUNT" \
     --argjson unresolved "$UNRESOLVED_COUNT" \
     --argjson assignees "$ASSIGNEES_JSON" \
@@ -1017,10 +1114,16 @@ emit_success_result() {
       summary: {
         features: $features,
         bugs: $bugs,
+        backlog: $backlog,
         resolved: $resolved,
         unresolved: $unresolved
       },
-      items: $items
+      items: $items,
+      backlog: [
+        $items[]
+        | select(.source_type == "backlog")
+        | {text: .original_text, url: .notion_url}
+      ]
     }'
 }
 
@@ -1061,7 +1164,7 @@ main() {
   [[ -n "$RELEASE_PAGE_TITLE" ]] || emit_error \
     "INVALID_CONFIGURATION" "RELEASE_PAGE_TITLE cannot be empty."
 
-  WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/plantid-notion-release.XXXXXX")"
+  WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/notion-release.XXXXXX")"
   trap cleanup EXIT
 
   parse_release_notes "$INPUT_FILE"
@@ -1069,7 +1172,7 @@ main() {
   validate_release_metadata
 
   PUBLISHED_AT="$(TZ='Asia/Ho_Chi_Minh' date '+%H:%M %d/%m/%Y')"
-  log_info "Resolving ${#FEATURE_TEXTS[@]} feature(s) and ${#BUG_TEXTS[@]} bug(s)."
+  log_info "Resolving ${#FEATURE_TEXTS[@]} feature(s), ${#BUG_TEXTS[@]} bug(s), and ${#BACKLOG_TEXTS[@]} backlog item(s)."
   resolve_all_items
 
   release_title="$(build_release_title)"

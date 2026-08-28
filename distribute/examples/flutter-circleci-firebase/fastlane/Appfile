@@ -1,0 +1,6 @@
+# Resolve the app identifier from the selected Fastlane environment so one
+# Appfile serves every flavor.
+
+app_identifier ENV["BUNDLE_IDENTIFIER"]
+apple_id ENV["APPLE_ID"]
+team_id ENV["APPLE_TEAM_ID"]

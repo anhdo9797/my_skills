@@ -16,16 +16,25 @@ Tier 3 needs the Agent, so it is deliberately **not** in the automated regressio
 
 Don't run Tier 3 on functional TCs that already passed — a clean `assertVisible` doesn't need eyes on it, and every screenshot read costs thousands of tokens. Don't re-run it each session on a UI TC that already passed and hasn't changed; the recorded verdict stands (see "Across sessions" below).
 
-## What vision can and cannot prove — read this before judging
+## What vision is for here — and what it must not be asked
 
-Vision **estimates**; it does not **measure**. Being honest about that boundary is what keeps the report trustworthy:
+Vision **estimates**; it does not **measure**, and it does not **read**. Both of those jobs belong to instruments, and handing them to vision is what used to make UI cases unfailable. Split the screen's properties three ways before you judge anything (`ui-metrics.md` is the full contract):
 
-- **It reliably catches** gross layout defects: overlapping elements, text truncated or clipped by its container, content running off-screen, obvious misalignment, an element missing or in the wrong region, the wrong screen state (a stuck spinner where loaded content was expected, an error banner instead of success), unreadable contrast, a broken/unloaded image placeholder, an untranslated key like `home.title` leaking to the UI.
-- **It cannot measure exact values.** "Is the padding 24dp?" or "is this font 16sp?" cannot be answered from a screenshot. Vision may say "this looks cramped compared to the design" — it may not claim a `dp`/`sp` number. Exact typography and spacing parity stays a **🔍 REVIEW** note for a human or a developer.
+| Question | Instrument | Vision's role |
+|---|---|---|
+| Is this the right text? | `text_audit.py` against the **view hierarchy** — exact string equality | none: never transcribe copy from pixels |
+| Is this gap / size / weight right? | `spacing_audit.py`, `typography_audit.py` — **ratios**, measured | none: never estimate a value a script measured |
+| Does it *look* right on screen? | **Vision**, cell by cell | all of it — this is the part only eyes can do |
+
+What's left for vision is the part it's genuinely good at, and it is a large part:
+
+- **It reliably catches** gross layout defects: overlapping elements, text truncated or clipped by its container, content running off-screen, obvious misalignment, an element missing or in the wrong region, the wrong screen state (a stuck spinner where loaded content was expected, an error banner instead of success), unreadable contrast, a broken/unloaded image placeholder.
+- **It is the only check for whether text is *visible*.** The hierarchy proves a string is correct; it cannot prove the user can read it, because a label ellipsized on screen still reports its full text. That defect is visible only in the image.
 - **It only sees what rendered.** Content below the fold, and states gated behind data or permissions, must be driven into view by the Maestro flow first (scroll, seed data) or they simply cannot be reviewed.
-- **Rendering context colors perception.** Status bar, system font scaling, locale, dynamic data, and device density all change pixels. Record the device profile with every verdict so a "defect" isn't just a different emulator.
+- **Rendering context colours perception.** Status bar, system font scaling, locale, dynamic data, and device density all change pixels. Record the device profile with every verdict so a "defect" isn't just a different emulator.
+- **It cannot claim a value.** No `dp`, no `sp`, no hex. Where a script measured it, quote the script. Where nothing measured it — colour shade, overall density — say "estimate" and mark it 🔍 REVIEW.
 
-Say which is which in the finding: an overlap is a **confirmed** defect; "spacing feels tight" is an **estimate**.
+Say which is which in the finding: an overlap is a **confirmed** defect; a quoted ratio is a **measurement**; "this blue reads darker" is an **estimate**.
 
 ## The biggest false FAIL: data state vs. design state
 
@@ -59,13 +68,15 @@ Everything stays under the feature's `report/` folder — `takeScreenshot: <bare
 ```
 .maestro/<app-id>/<feature>/report/
 ├── screenshots/   ← clean device captures from takeScreenshot
-├── figma/         ← design references: Figma renders or tester-supplied exports
-├── grid/          ← what vision actually reads: <stem>-grid.png (heuristic) or <stem>-pair.png (design mode)
+├── figma/         ← design references (export at 2x/3x) + TC-XXX_expected.json copy lists
+├── text/          ← text_audit.py results: the exact-string comparison JSON
+├── grid/          ← what the review reads: <stem>-grid.png (heuristic), or
+│                    <stem>-pair.png / -spacing.png / -type.png (design mode)
 └── vision/        ← annotated result images, defect cells washed red — the deliverable
 ```
 
 Pair files by the same `TC-XXX_<state>` stem across folders so the set is obvious at a glance:
-`figma/TC-010_default.png` ↔ `screenshots/TC-010_default.png` ↔ `grid/TC-010_default-pair.png` ↔ `vision/TC-010_default-report.png`.
+`figma/TC-010_default.png` ↔ `screenshots/TC-010_default.png` ↔ `text/TC-010_default.json` ↔ `grid/TC-010_default-pair.png` ↔ `vision/TC-010_default-report.png`.
 
 ## Getting the design reference (design mode)
 
@@ -80,29 +91,72 @@ Two sources, both ending as a PNG in `report/figma/`, after which the comparison
 
 ```text
 [design mode]
-Maestro drives to the screen → takeScreenshot into report/screenshots/  (clean, no grid)
-   → pair_view.py design.png actual.png --crop-actual-top/--bottom …
-        (crops chrome so cell addresses align, diffs pixels, flags cells over
-         threshold, composes ONE side-by-side image)  → report/grid/<stem>-pair.png
+Maestro drives to the screen
+   → maestro hierarchy > /tmp/screen.json      (the exact strings the app renders)
+   → takeScreenshot into report/screenshots/   (clean, no grid)
+
+   → text_audit.py --expected …_expected.json --actual /tmp/screen.json
+        (EXACT string equality; names each difference: diacritics / casing /
+         truncated / wording)                       → report/text/<stem>.json
    → spacing_audit.py design.png actual.png …
         (scales by WIDTH only, segments both into element bands, MEASURES every
          gap / height / margin in design px-dp)     → report/grid/<stem>-spacing.png + JSON
-   → read the spacing JSON, then the two composites: account for every flagged
-     gap, then every flagged cell, then finish the checklist scan on the rest
+   → typography_audit.py design.png actual.png …
+        (MEASURES font size and stroke weight per text band, as ratios — both
+         against the design and against the screen's own body text)
+                                                    → report/grid/<stem>-type.png + JSON
+   → pair_view.py design.png actual.png --crop-actual-top/--bottom …
+        (crops chrome so cell addresses align, diffs pixels, flags cells over
+         threshold, composes ONE side-by-side image)  → report/grid/<stem>-pair.png
+
+   → read the three JSONs FIRST (they are numbers, not images, and they settle
+     most of the verdict), then the composites: account for every flagged gap,
+     band, and cell, then finish the checklist scan on the rest
    → classify each finding Critical / Minor, naming the exact cell(s)
    → severity → verdict (❌ FAIL / 🔍 REVIEW / ✅ PASS)
    → if any defect: grid_overlay.py --highlight <cells> → report/vision/<stem>-report.png
    → one row in report.md + findings in UI Validation Details (+ Failed Test Details if FAIL)
 
 [heuristic mode — no design reference]
-Maestro drives to the screen → takeScreenshot → grid_overlay.py → report/grid/<stem>-grid.png
+Maestro drives to the screen → maestro hierarchy (text_audit still applies whenever
+   the plan or PRD specifies the copy) → takeScreenshot → grid_overlay.py
+   → report/grid/<stem>-grid.png
    → read the gridded image, scan cell by cell against the checklist below
    → same classify → verdict → highlight → report steps as above
 ```
 
-### Step 1 — Capture a clean screenshot
+The measured checks run **before** the image is read, and that ordering is deliberate: they are cheap, deterministic, and they usually decide the verdict on their own. Reading a screenshot to form an impression of something a script already measured is both the most expensive step and the least reliable one.
+
+### Step 1 — Capture the screen twice: pixels and strings
 
 The TC's YAML already ends on `takeScreenshot` after the screen settles (`waitForAnimationToEnd` / `extendedWaitUntil`). Capture the exact state under test. For a long screen, take one shot per scroll position (`TC-010_top`, `TC-010_mid`, `TC-010_bottom`) — vision only sees what's in frame, so anything below the fold has to be scrolled into view by the flow.
+
+At the same moment, dump the **view hierarchy** to a file:
+
+```bash
+maestro hierarchy > /tmp/TC-010_default.json     # iOS + Android
+# Android alternative: adb exec-out uiautomator dump /dev/tty > /tmp/TC-010_default.xml
+```
+
+Redirect it — never let a raw dump into context (`selectors-and-inspection.md`). The screenshot and the hierarchy are the same screen seen two ways, and the review needs both: the hierarchy carries the exact strings, the screenshot carries how they render. Capture them together so they can't drift out of sync.
+
+### Step 1b — Settle the text content first (exact, no tolerance)
+
+Text is the one property with no tolerance, and it is also the cheapest thing to check, so do it before any image is read.
+
+```bash
+python3 scripts/text_audit.py \
+    --expected report/figma/TC-010_expected.json \
+    --actual /tmp/TC-010_default.json \
+    --ignore '^\d' --ignore 'đ$' \
+    --out report/text/TC-010_default.json
+```
+
+Build the expected list from the Figma node (`get_design_context`), the test plan, or — last resort — by transcribing the design export, in that order of trust. Skip this only when nothing specifies the copy; then the hierarchy still earns its keep, because `defects[]` catches a leaked i18n key, a string that arrives already ellipsized, and an element with collapsed or off-screen bounds without needing any expected list at all.
+
+Every entry in `mismatched[]`, `missing[]`, or `defects[]` is **Critical**. There is no percentage of a wrong string that is acceptable, so none of these belong in 🔍 REVIEW. Lead the finding with the `difference` field — "missing Vietnamese diacritics" points straight at an encoding or resource problem, while "expected X, got Y" makes the developer diff two strings by eye.
+
+One thing this cannot prove: **that the text is visible**. A label ellipsized on screen still reports its full string here. That defect belongs to the image, and it is one of the things the cell-by-cell scan is looking for.
 
 ### Step 2 — Align and grid
 
@@ -166,13 +220,50 @@ Read the JSON first:
 
 When the verdict is INCONCLUSIVE or the band boxes in the PNG don't land on elements you'd name out loud, fix the inputs — in this order: crop the chrome (`--crop-design-*` too: a 390×844 iPhone frame draws its own status bar, ~6% top / ~2% bottom); `--mask-actual` a FAB or debug overlay that bridges a gap and merges two bands; `--roi-top`/`--roi-bottom` to audit only the part of the screen that has visible separation; `--design-width-dp 390` when the export isn't 1x so the report reads in real dp; `--min-gap` (default `auto`, prints `min_gap_used`) if a paragraph split per line or two sections merged. If it stays inconclusive, say so and fall back to visual review — never quote a number you don't trust.
 
-**Dependency (all three scripts):** Pillow. If it errors with "Pillow is required", run `pip3 install Pillow` once — a one-time setup, not a per-case cost.
+### Step 2c — Measure the typography (design mode: always, not optional)
+
+Font size and font weight used to be the two properties this skill declared untestable, and that declaration was what made 🎨 cases unfailable — a title rendering at body size produced a soft note and nothing else. The question was wrong, not the medium. "Is this 16sp?" is unanswerable from pixels; "is this the size the design says, proportionally, and is it still bigger than body text by the same factor?" is a ratio, and ratios measure cleanly.
+
+```bash
+python3 scripts/typography_audit.py report/figma/TC-010_default.png \
+    report/screenshots/TC-010_default.png \
+    --crop-design-top 6% --crop-design-bottom 2% --crop-actual-top 4% \
+    --design-width-dp 390 \
+    --out report/grid/TC-010_default-type.png
+```
+
+It segments both images into text bands the same way `spacing_audit.py` does, then measures each band's **x-height** (the size signal) and **stroke thickness ÷ x-height** (the weight signal — dimensionless, so it doesn't move with size). Every band gets four ratios: size and weight against the design, and size and weight against the median of its *own* screen. The pair matters because they fail differently — a uniformly shrunk type scale passes the intra-screen check and fails the cross-image one, while a heading that lost its style does the reverse.
+
+Read the JSON first:
+
+| Field | How to read it |
+|-------|----------------|
+| `verdict` | Already phrased for the report. `INCONCLUSIVE` (under 2 matched text bands) means fix the inputs before quoting anything. |
+| `systematic_size_ratio` | Median size ratio across the screen. Outside tolerance = the whole type scale is wrong — **one** finding with one root cause, not one per band. |
+| `bands[].reasons` | Plain-language statement of exactly which ratio failed and by how much. Quote it verbatim into the finding. |
+| `bands[].weight_confidence` | `high` on a paragraph, `low` on a two-word label. A low-confidence weight finding is an estimate — mark it 🔍 REVIEW rather than failing on it. |
+| `bands[].secondary_reasons` | Differences against the screen's own body text rather than against the design. Follow them up, but do not fail a case on them: the baseline they use is defined by the screen, so one real defect can nudge it and implicate an innocent element. |
+| `bands[].style_run` | `2/2` = the second type style inside one ink band, measured separately. This is what lets a caption under a heading be judged on its own instead of being averaged into it. |
+| `bands[].size_tolerance_used` | The tolerance actually applied. When it is well above the 8% floor, the inputs couldn't support finer — see below. |
+| `resolution_note` | Present when the design export and the screenshot are at mismatched scales, or the text is too small to resolve a size step. **Act on it.** |
+| `unmatched_design` / `unmatched_actual` | Bands with no counterpart — almost always a data difference. Judge from the image, never report as a typography defect. |
+
+**Export the design at the device's scale.** A 1x Figma export beside a 3x screenshot is not one measurement repeated: the low-resolution side reads systematically larger and heavier, because proportionally more of each glyph is antialiased edge. The script detects the mismatch and widens its tolerances rather than reporting a bias as a bug — which is correct, but it costs real sensitivity: at 1x-vs-3x a single-step font-size change (16→14) is simply not detectable. Re-export at 2x/3x (Figma MCP `get_screenshot` / `download_assets` take a scale) and it flags. This is one export setting and it is the difference between a test that can fail and one that can't.
+
+Bands that are photos, dividers, or filled shapes are detected and marked `comparable: false` rather than guessed at, so a hero image never becomes a typography finding.
+
+**Dependency (all four scripts):** Pillow. If it errors with "Pillow is required", run `pip3 install Pillow` once — a one-time setup, not a per-case cost.
 
 ### Step 3 — Scan cell by cell (don't glance)
 
 **Design mode:** work from the measurements outward, in this order:
 
-0. **Settle geometry from `spacing_audit.py`'s JSON before you look at anything.** Account for every `flagged: true` gap, and check `systematic_gap_ratio` — if it's outside tolerance, the honest finding is *one* finding ("all section spacing renders N% larger than design") with the per-gap table as evidence, not nine separate gap findings for one wrong token. A clean `pair_view.py` diff is **not** evidence that spacing is fine; it never measured it. Say "content/style diff clean" and cite the spacing audit separately.
+0. **Settle everything measurable before you look at anything.** Three JSONs, in this order — they are numbers, they are cheap, and they usually decide the verdict on their own:
+   - **`text_audit.py`** — every `mismatched`, `missing`, and `defects` entry is Critical. Exact, no tolerance.
+   - **`spacing_audit.py`** — account for every `flagged: true` gap, and check `systematic_gap_ratio`. If it's outside tolerance, the honest finding is *one* finding ("all section spacing renders N% larger than design") with the per-gap table as evidence, not nine separate gap findings for one wrong token.
+   - **`typography_audit.py`** — account for every flagged band, and check `systematic_size_ratio` the same way. Read `resolution_note` and `size_tolerance_used`: if the tolerance had to be widened a lot, a real one-step size bug may be sitting under it, and the fix is a higher-scale design export, not a softer conclusion.
+
+   A clean `pair_view.py` diff is **not** evidence that spacing or typography is fine; it never measured either. Say "content/style diff clean" and cite the measurements separately.
 
 Then read the **paired composite** (`report/grid/<stem>-pair.png`) — design left, actual right, same grid, amber-flagged cells on the right showing a measured diff percentage — and do two things, in order:
 
@@ -194,10 +285,12 @@ Then read the **paired composite** (`report/grid/<stem>-pair.png`) — design le
 
 **Design-parity checklist** (a design reference was provided):
 
-- **Spacing, element sizes, side margins — from `spacing_audit.py`, quoted as numbers.** Every flagged gap accounted for; `systematic_gap_ratio` reported when it's outside tolerance; `band_heights` and `margin_deviations` checked. Never leave this line as an impression when a measurement exists.
+- **Text content — from `text_audit.py`, exact.** Every expected string accounted for, every `defects[]` entry raised. Never re-read copy off the screenshot to "confirm" it; the hierarchy already settled it, and re-reading only adds a chance to be wrong.
+- **Spacing, element sizes, side margins — from `spacing_audit.py`, quoted as numbers.** Every flagged gap accounted for; `systematic_gap_ratio` reported when it's outside tolerance; `band_heights` and `margin_deviations` checked.
+- **Font size and weight — from `typography_audit.py`, quoted as ratios.** Every flagged band accounted for; `systematic_size_ratio` reported when the whole scale is off; low-confidence weight findings marked as estimates.
 - Every **amber-flagged cell** from `pair_view.py` explained first (see Step 3) — that's the measured, can't-skip list.
 - Same elements present, in the same regions (map each design region to a cell range).
-- Text content matches — copy, casing, no untranslated keys.
+- **Is the text actually readable as rendered** — this is the half `text_audit.py` cannot see: a correct string ellipsized, clipped by its box, or overlapped by a neighbour.
 - Relative layout matches: order, grouping, alignment, proportions.
 - Color and emphasis match intent (the primary button actually looks primary).
 - Flag anything present in the design but missing on device (and vice versa) **that is not data-driven**.
@@ -209,12 +302,16 @@ Compare **relative** layout and presence, not pixel-exact positions: device dens
 
 | Severity | Definition | Examples |
 |----------|------------|----------|
-| **Critical** | Breaks usability, or is unambiguously wrong — including a *measured* deviation from the design. | A control's text fully clipped or unreadable; two interactive elements overlapping; content running off-screen; a required element missing; an untranslated key on screen; a broken image where content was expected; **`systematic_gap_ratio` outside tolerance** (the screen's whole vertical rhythm is wrong); **one measured gap or margin far outside tolerance** (e.g. 13 → 42 design px). |
-| **Minor** | Subjective, or measured but small and localized. | A gap 5–6 design px off in one place; slightly off-center; a colour shade a touch off vs. the design; density that reads inconsistent but legible. |
+| **Critical** | Breaks usability, is unambiguously wrong, or is a *measured* deviation outside tolerance. | **Any text mismatch or text defect at all** — wrong copy, missing diacritics, wrong casing, an untranslated key, a string that arrives truncated (exact-match property: there is no small version of this); a control's text fully clipped or unreadable; two interactive elements overlapping; content running off-screen; a required element missing; a broken image where content was expected; **`systematic_gap_ratio` or `systematic_size_ratio` outside tolerance** (the screen's whole rhythm or type scale is wrong); **one measured gap, margin, font size, or weight far outside tolerance** (e.g. a heading at 0.67× the design's size, or a gap 13 → 42 design px). |
+| **Minor** | Measured but small and localized, or genuinely subjective. | A gap 5–6 design px off in one place; a font size just past tolerance on a single band; slightly off-center; a colour shade a touch off vs. the design; density that reads inconsistent but legible. |
 
 If you're unsure whether something is Critical, ask: *would a normal user notice and be blocked or confused?* Yes → Critical. Merely "a designer might tweak it" → Minor. **Bias Minor when genuinely uncertain** — a false Critical erodes trust faster than a missed nitpick.
 
-**But a measured deviation isn't uncertainty.** "Spacing complaints are subjective, so file them Minor" was right only while spacing couldn't be measured. It can now, and filing a measured 29% inflation as a soft note is how a real single-root-cause layout bug ships. If the number is outside tolerance and the segmentation is sound (band boxes land on real elements, gap `comparable: true`), it's **Critical**: state the measurement, don't hedge it. Save the hedging for what genuinely is an estimate — an INCONCLUSIVE verdict, an unmatched band, a colour impression.
+**But a measured deviation isn't uncertainty, and a wrong string isn't a matter of degree.** "Spacing and typography complaints are subjective, so file them Minor" was right only while neither could be measured. Both can now, and filing a measured 29% inflation or a heading rendering at 0.67× its intended size as a soft note is how a real single-root-cause bug ships. If the number is outside tolerance and the segmentation is sound (band boxes land on real elements, gap `comparable: true`, `weight_confidence` not `low`), it's **Critical**: state the measurement, don't hedge it.
+
+Text is stricter still: it has no tolerance to be inside of, so a mismatch is Critical regardless of size. One missing diacritic is Critical.
+
+Save the hedging for what genuinely is an estimate — an INCONCLUSIVE verdict, an unmatched band, a `low`-confidence weight reading, a colour impression.
 
 ### Step 5 — Severity → verdict
 
@@ -255,6 +352,15 @@ Write each finding so a reviewer can locate and judge it without re-deriving con
   28→36, card row→"Your Garden" 24→32, "Your Garden"→content 13→42 design px.
   Likely one root cause — a single vertical-spacing token.
   Evidence: report/grid/TC-010_default-spacing.png. Figma node 123:456.
+[Critical] B2–C2: screen title renders at 0.67x the design's size and at body
+  weight (typography_audit band 0: x-height 14.5→10.1 design px; stroke ratio
+  0.66, confidence high). Relative to body text it is 1.25x where the design
+  uses 1.88x — the heading text style is not being applied.
+  Evidence: report/grid/TC-010_default-type.png
+[Critical] Login title renders without Vietnamese diacritics: expected
+  "Đăng nhập", the hierarchy reports "Dang nhap" (element id login_title).
+  Text content is exact-match, so this is Critical regardless of size.
+  Evidence: report/text/TC-010_default.json
 [Minor]    B2: search field renders 4 design px shorter than the design (48→44) —
   noticeable but not a usability issue.
 ```
@@ -279,7 +385,8 @@ When a screen passes Tier 3 cleanly and the tester wants it protected in future 
 Reading a screenshot is the one place this skill deliberately spends tokens on an image — that's the test, not waste. Keep it disciplined:
 
 - Read **one gridded image per screen state**. Never read the raw *and* the gridded version of the same shot; the gridded one carries everything.
-- In design mode, read the **`-pair.png`** and the **`-spacing.png`** composites — two images that each already contain both halves side by side. Don't also read the ungridded originals, the design on its own, or grid the two images separately. Read `spacing_audit.py`'s **JSON before its PNG**: the numbers usually settle the question, and the image is then only needed to name which band is which.
+- **Read every JSON before any PNG.** `text_audit.py`, `spacing_audit.py`, and `typography_audit.py` all print numbers, and numbers cost a fraction of what an image costs while being strictly more reliable. In practice they settle most of the verdict, and the images are then only needed to name which band is which and to catch what nothing measured.
+- In design mode, read the **`-pair.png`**, **`-spacing.png`**, and **`-type.png`** composites — each already contains both halves side by side. Don't also read the ungridded originals, the design on its own, or grid the two images separately. If the spacing and typography JSONs are clean and unambiguous, their PNGs can be skipped entirely; `-pair.png` is the one that still earns a read, because the checklist scan happens on it.
 - Add scroll-position shots (`-top/-mid/-bottom`) only when content genuinely extends beyond the fold; each is another image in context.
 - Reserve vision for 🎨 UI TCs and explicit design-QA requests. A functional TC with a clean `assertVisible` doesn't need eyes on it.
 - Skip `--emit-legend` unless you need the coordinate map.

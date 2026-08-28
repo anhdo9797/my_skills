@@ -7,6 +7,7 @@
 - [Discord setup](#discord-setup)
 - [Variable reference](#variable-reference)
 - [Fastlane and CI setup](#fastlane-and-ci-setup)
+- [CircleCI variables](#circleci-variables)
 - [Release-note input](#release-note-input)
 
 ## Security boundary
@@ -101,6 +102,8 @@ Unmapped names remain unchanged as plain text. An empty assignee list uses
 | `DISCORD_RELEASE_VERSION_TEMPLATE` | No | No | Supports `{{VERSION}}`, `{{BUILD_NUMBER}}`. |
 | `DISCORD_RELEASE_NOTES_LABEL` | Yes | No | Release link field label. |
 | `DISCORD_RELEASE_NOTES_VALUE_TEMPLATE` | No | No | Supports `{{RELEASE_URL}}`. |
+| `DISCORD_BACKLOG_LABEL` | No | No | Backlog field label; defaults to `📌 Backlog`. |
+| `DISCORD_BACKLOG_MAX_ITEMS` | No | No | Positive backlog item cap; default `10`. |
 | `DISCORD_TASK_ASSIGNED_LABEL` | Yes | No | Assignee field label. |
 | `DISCORD_ACTION_REQUIRED_TEXT` | Yes | No | Verification instruction. |
 | `DISCORD_EMBED_COLOR` | No | No | Six-digit hex color; default `#2ECC71`. |
@@ -117,6 +120,7 @@ Recommended non-secret display values:
 ```sh
 DISCORD_RELEASE_NOTES_LABEL="📋 Release notes"
 DISCORD_TASK_ASSIGNED_LABEL="👥 Task assigned"
+DISCORD_BACKLOG_LABEL="📌 Backlog"
 DISCORD_ACTION_REQUIRED_TEXT="✅ **Yêu cầu:** Vui lòng xác minh các task được giao trước khi gửi bản build cho QC."
 DISCORD_UNASSIGNED_FALLBACK="Chưa phân công"
 DISCORD_EMBED_AUTHOR_TEMPLATE="{{APP_NAME}} release {{ENVIRONMENT}}"
@@ -148,9 +152,44 @@ For CI:
 Do not commit a mapping containing real organization member IDs unless the user
 confirms that repository policy allows it.
 
+`examples/flutter-circleci-firebase/fastlane/env.prod.example` lists every name
+in one place. Copy it to the project's own env location with an `.example`
+suffix, keep it committed with empty values, and have the user fill in the real
+file locally. That location is project-specific — see
+[env-layouts.md](env-layouts.md) before choosing it.
+
+## CircleCI variables
+
+The reference pipeline injects the entire dotenv file as one base64 CI variable
+per environment rather than declaring each name separately:
+
+| CI variable | Contents |
+| --- | --- |
+| `ENV_DEV_FILE` | base64 of the project's dev env file |
+| `ENV_PROD_FILE` | base64 of the project's prod env file |
+
+Non-dotenv secrets travel the same way: keystores, `key.properties`, the App
+Store Connect `.p8`, and Firebase config files. Each job declares where its
+files land through `SECRET_FILES`.
+
+```bash
+base64 -i fastlane/.env.prod   # macOS
+base64 -w0 fastlane/.env.prod  # Linux
+```
+
+One variable per environment keeps CI and local runs on the same source of
+truth. Twenty individually declared CI variables drift from the local dotenv
+within a release or two, and the drift only shows up as a failed release.
+
+Use a CircleCI context when several repositories share the same Notion
+integration or Discord webhook. See
+[circleci-integration.md](circleci-integration.md) for job structure and the
+tooling each executor needs, and [env-layouts.md](env-layouts.md) for choosing
+the decode destinations.
+
 ## Release-note input
 
-The Notion asset accepts UTF-8 text with both required sections:
+The Notion asset accepts UTF-8 text with up to three optional sections:
 
 ```text
 🧩 Features:
@@ -158,10 +197,15 @@ The Notion asset accepts UTF-8 text with both required sections:
 
 🐞 Bug Fixed:
 - iOS New [BUG 10] - Bug title
+
+📌 Backlog:
+- Deferred task title
 ```
 
 Pass platform, version, build number, and environment as CLI arguments from
 Fastlane. Do not duplicate those values in the release-note file.
 
-When a task cannot be resolved, the script keeps its original text in the
-Notion release page. It must not silently drop the item.
+Empty sections, placeholder bullets, and unknown headings are handled without
+failing the release. When a task cannot be resolved, the script keeps its
+original text in the Notion release page rather than dropping it. See
+[release-notes-format.md](release-notes-format.md) for the complete rules.

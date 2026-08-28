@@ -26,7 +26,7 @@ A plan is often too large for one sitting (e.g. 60 cases across P0→P4). The te
 | ⬜ PENDING | Planned, not run yet (seeded but untouched) |
 | ✅ PASS | Ran and passed |
 | ❌ FAIL | Ran and failed (has a Failed Test Details entry) |
-| 🔍 REVIEW | Ran; evidence captured, but the verdict needs a human — only **Minor** Tier 3 visual findings, or exact typography/spacing parity vision can't measure. Not a pass, not a failure. |
+| 🔍 REVIEW | Ran; evidence captured, but the verdict needs a human — only **Minor** Tier 3 findings, or an observation nothing measured (a colour impression, a `low`-confidence weight reading, an `INCONCLUSIVE` audit). Not a pass, not a failure. A *measured* deviation outside tolerance, and any text mismatch, are ❌ FAIL — not this. |
 | ⏭️ SKIP | Not automatable (manual/hardware/performance) |
 | 🔄 RETRY | Previously failed, re-run this session — update the same row |
 
@@ -73,8 +73,9 @@ Where the images come from:
 2. **`report/<timestamp>/screenshot-❌-*.png`** — auto-captured by Maestro on failure
 3. **`report/figma/`** — design references (Figma renders or tester-supplied exports)
 4. **`report/diff/`** — `compare_screenshots.py` heatmaps (Tier 2 failures)
-5. **`report/grid/`** — gridded screenshots (Tier 3 working images; usually not linked in the report)
-6. **`report/vision/`** — Tier 3 annotated results with defect cells washed red — **this is the evidence to link for a visual finding**, not the raw screenshot
+5. **`report/grid/`** — Tier 3 working images: `-grid.png`, `-pair.png`, `-spacing.png`, `-type.png`. Link the measurement composite (`-spacing.png` / `-type.png`) as evidence for a measured finding; the rest usually stay unlinked
+6. **`report/text/`** — `text_audit.py` JSON: the exact-string comparison. **This is the evidence to link for any text finding** — it carries the expected string, the rendered string, the element id, and what kind of difference it is
+7. **`report/vision/`** — Tier 3 annotated results with defect cells washed red — **this is the evidence to link for a visual finding**, not the raw screenshot
 
 > **Capture the path to the failing state, not just the crash frame.** For a failed TC, the auto `screenshot-❌` shows the end state. To make the bug reproducible, also ensure a `takeScreenshot` runs on the **screen just before the failing action** where practical, so the report can show the setup and the failure. See "Failed Test Details" below.
 
@@ -194,25 +195,35 @@ When a TC has many steps or failed mid-way, expand it into one row per step so t
 
 *(Only if a 🎨 UI-validation TC ran. Record which tiers ran and what each said — a "—" means that tier wasn't used for this TC, which is normal. Full screenshot paths for any failure also go into Failed Test Details above so bug logging has them.)*
 
-| TC | Screen | Tier 1 (assertions) | Tier 2 (baseline diff) | Tier 3 (visual review) | Verdict |
-|----|--------|---------------------|------------------------|------------------------|---------|
-| TC-010 | Edit Form | ❌ `assertVisible: "Save Recipe"` failed — button reads "Save" | — | 1 Critical (C3–D3 title clipped) | ❌ FAIL (static label + clipping) |
-| TC-011 | Home | ✅ all pass | ✅ diff 0.4% ≤ 1% ([heatmap](.../diff/TC-011_diff.png)) | 2 Minor (spacing A11–F11) | 🔍 REVIEW — Minor only |
-| TC-012 | Detail | ✅ all pass | ❌ diff 3.2% > 1% ([heatmap](.../diff/TC-012_diff.png)) | confirms: card height drifted, B4–E6 | ❌ FAIL — card height drifted |
-| TC-013 | Settings | ✅ all pass | — (no baseline yet) | ✅ clean — promoted to baseline | ✅ PASS |
+| TC | Screen | Tier 1 (assertions) | Tier 2 (baseline diff) | Text (exact) | Spacing / type (ratios) | Visual scan | Verdict |
+|----|--------|---------------------|------------------------|--------------|-------------------------|-------------|---------|
+| TC-010 | Edit Form | ❌ `assertVisible: "Save Recipe"` failed — button reads "Save" | — | ❌ 1 wrong (wording) | ✅ within tolerance | 1 Critical (C3–D3 title clipped) | ❌ FAIL (wrong label + clipping) |
+| TC-011 | Home | ✅ all pass | ✅ diff 0.4% ≤ 1% ([heatmap](.../diff/TC-011_diff.png)) | ✅ 14/14 exact | 🔍 1 gap +12% (Minor) | 1 Minor (A11–F11) | 🔍 REVIEW — Minor only |
+| TC-012 | Detail | ✅ all pass | ❌ diff 3.2% > 1% ([heatmap](.../diff/TC-012_diff.png)) | ✅ 9/9 exact | ❌ `systematic_gap_ratio` 1.29 | confirms: B4–E6 | ❌ FAIL — all section spacing +29% |
+| TC-013 | Login | ✅ all pass | — | ❌ diacritics missing on title | ❌ heading at 0.67× design size, body weight | — | ❌ FAIL — copy + heading style |
+| TC-014 | Settings | ✅ all pass | — (no baseline yet) | ✅ 11/11 exact | ✅ within tolerance | ✅ clean — promoted to baseline | ✅ PASS |
 
-> Tier 1 failures cite the exact assertion. Tier 2 failures cite the diff ratio vs. threshold and link the heatmap. Tier 3 findings cite **severity + cell address** and link the annotated `vision/…-report.png`.
+> Tier 1 failures cite the exact assertion. Tier 2 failures cite the diff ratio vs. threshold and link the heatmap. **Text** failures cite the difference kind (diacritics / casing / truncated / wording) and link the `text/…json`. **Spacing / type** failures cite the measured ratio and link the `-spacing.png` / `-type.png`. **Visual scan** findings cite severity + cell address and link the annotated `vision/…-report.png`. A "—" means that check wasn't used for this TC, which is normal; it is *not* the same as passing.
 
 ### Tier 3 findings (one line per finding, per TC)
 
-*The cell address is what makes a visual finding actionable — "title is clipped" is vague, "title clipped in C3–D3" points straight at it. Mark estimates as estimates: vision judges layout, it never measures `dp`/`sp`.*
+*Lead with the number wherever a script produced one, and with the location always — "title is clipped" is vague, "title clipped in C3–D3" points straight at it; "spacing looks off" is unactionable, "gap 24→32 design px (+33%)" is a fix. Mark estimates as estimates: vision judges layout, it never measures a value.*
 
 ```
 TC-010 — Edit Form  (device: Pixel 7 emulator, Android 14 · design: Figma node 123:456)
   [Critical] C3–D3: recipe title clipped at the right edge of the card; last
              characters cut by the card boundary. → report/vision/TC-010_default-report.png
-  [Minor]    A11–F11: bottom nav icons sit tight against the divider; gap looks
-             about half the design's (estimate, not measured).
+  [Critical] Screen title renders at 0.67× the design's size and at body weight
+             (typography_audit band 0: x-height 14.5→10.1 design px, stroke ratio
+             0.66, confidence high). Relative to body text it is 1.25× where the
+             design uses 1.88× — the heading style is not applied.
+             → report/grid/TC-010_default-type.png
+  [Critical] Login title renders without Vietnamese diacritics: expected
+             "Đăng nhập", hierarchy reports "Dang nhap" (id login_title). Text is
+             exact-match, so this is Critical regardless of size.
+             → report/text/TC-010_default.json
+  [Minor]    A11–F11: bottom nav sits 6 design px tighter than the design (18→12,
+             −33% on one gap only; the rest of the screen is within tolerance).
   Excluded as data-driven: only 3 recipe cards shown vs. 6 in the design (user's data).
 ```
 

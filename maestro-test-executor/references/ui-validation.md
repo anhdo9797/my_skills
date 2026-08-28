@@ -2,6 +2,8 @@
 
 The goal of UI validation is to verify that the app screen looks the way it should — matching the Figma design where one exists, and free of layout defects either way.
 
+> **Read `ui-metrics.md` first.** It defines what a UI case may assert and how precisely: text content is **exact** (no tolerance, read from the view hierarchy), while spacing, element size, font size, and font weight are **relative** (ratios against the design and against the screen's own baseline, with a tolerance band). Outside its rule, either class fails the case outright. Everything below is the machinery; that document is the contract, and without it a UI case degrades into impressions that can never fail.
+
 The naive way — have the Agent eyeball Figma vs. a screenshot on every run — works, but it puts the Agent in the regression loop forever: slow, token-heavy, impossible to run headless in CI. So the durable checks are built the other way around: **the Agent's vision is an authoring tool, not a runtime dependency.** It looks at the design *once*, while writing the test, and turns it into checks that Maestro (and a tiny diff script) can run forever without any Agent.
 
 But some things genuinely need eyes — a clipped title, two overlapping labels, a first-ever run with no baseline to diff against. That's a separate, deliberately on-demand tier. Three tiers total:
@@ -10,7 +12,7 @@ But some things genuinely need eyes — a clipped title, two overlapping labels,
 |------|----------------|-----------|------------------|
 | **1 — Assertions** (always) | Specific, nameable facts from the design: static labels, button text, key elements present/absent, counts, states | Maestro `assertVisible` / `assertNotVisible` / property assertions baked into the TC YAML | **No** — pure Maestro, CI-safe |
 | **2 — Baseline diff** (optional) | Layout / color / spacing *drift* from an approved capture, which assertions can't name | `scripts/compare_screenshots.py` diffs the fresh screenshot against the baseline, with dynamic regions masked | **No** — deterministic script, CI-safe |
-| **3 — Visual review** (on demand) | How the screen *looks*: overlap, truncation, clipping, misalignment, wrong state — defects with no baseline and no name | `scripts/grid_overlay.py` + the Agent scanning the gridded screenshot cell by cell → severity → verdict | **Yes** — that's the point; see `visual-review.md` |
+| **3 — Visual review** (on demand) | Two things at once: **measured parity** with the design (text exact; spacing / size / weight as ratios) and how the screen *looks* — overlap, truncation, clipping, misalignment, wrong state | `text_audit.py` + `spacing_audit.py` + `typography_audit.py` measure; then `pair_view.py` / `grid_overlay.py` and the Agent scan cell by cell → severity → verdict | **Partly** — the measurements are scripts and run without one; the cell scan is the Agent's job. See `visual-review.md` |
 
 Tiers 1 and 2 are the regression contract: they run every time, forever, unattended. Tier 3 is the pass that *creates* that contract and catches what it can't express. The Agent re-enters only when the design changes, a baseline must be re-approved, or the tester explicitly asks for a visual QA pass — not on every run.
 
@@ -102,6 +104,10 @@ env:
 
 What makes a good Tier 1 assertion: it names a **static** element (from the table above), it's specific (exact label text, a stable `id`), and it would still be true tomorrow regardless of API data. Don't assert dynamic content (a specific recipe name, a count, a date) — that makes the test flaky.
 
+**Maestro's `text:` is a regular expression, not a literal.** So `assertVisible: "Save"` can match a button reading "Save draft", and copy containing `.`, `(`, `?`, `+`, or `*` matches more loosely than it looks. When the exact string is the point, anchor it and escape the metacharacters — `text: "^Save Recipe$"`, `text: "^Quên mật khẩu\?$"`. This is a real source of assertions that pass on the wrong string.
+
+Even anchored, an assertion set is a *sample* of the copy — you write the handful of labels you thought to write. For a screen whose copy is specified (a Figma node, a PRD, a plan that quotes the strings), run `scripts/text_audit.py` as well: it compares **every** rendered string against the expected list, exactly, and catches the leaked i18n key and the diacritic-stripped label that nobody thought to assert. Tier 1 is the CI-safe subset; `text_audit.py` is the complete check at authoring time. See `ui-metrics.md`.
+
 If you can't reach a screen or an element selector is unknown, follow `selectors-and-inspection.md`.
 
 ## Tier 2 — Visual baseline diff (optional, for drift assertions can't name)
@@ -136,15 +142,19 @@ The script prints a JSON summary and exits `0` (within threshold → PASS) or `1
 
 Tuning: `--tolerance` is the per-channel intensity delta below which a pixel counts as unchanged (default 24, absorbs anti-aliasing); `--threshold` is the allowed changed-pixel ratio (default 0.01 = 1%). If a run fails only because of a newly-dynamic region, add a mask to the sidecar rather than loosening the threshold.
 
-## Tier 3 — Visual review from the screenshot (on demand)
+## Tier 3 — Measured parity + visual review (on demand)
 
-Tiers 1 and 2 both need something to compare against: a named fact, or an approved baseline. Tier 3 needs neither — the Agent reads the screenshot and judges the layout directly, which is the only way to catch a clipped title or two overlapping labels on a screen nobody has baselined yet.
+Tiers 1 and 2 both need something to compare against: a named fact, or an approved baseline. Tier 3 needs neither — it works from the design reference (or from nothing at all), which is the only way to judge a screen nobody has baselined yet.
+
+Two things happen in this tier, and keeping them distinct is what makes it able to fail. **Measured parity** compares the screen to the design in numbers: exact strings from the hierarchy, and spacing / size / weight as ratios. Those are scripts, they are deterministic, and a result outside tolerance fails the case on its own. **Visual review** is the Agent reading the composite image for what no script measured — a clipped title, two overlapping labels, a stuck spinner, an unreadable contrast.
 
 To keep that judgment systematic rather than one impressionistic glance, the screenshot is gridded first so every finding carries an address (`C3`, `A6:F8`) a reviewer can find again. There are two entry points, depending on whether a design reference exists:
 
 - **No design reference (heuristic mode):** `scripts/grid_overlay.py` grids the screenshot alone; the review walks it cell by cell against a defect checklist.
-- **A design reference exists (design mode):** run **two** scripts, because they answer two different questions and each is blind to the other's.
+- **A design reference exists (design mode):** run **four** checks, because they answer four different questions and each is blind to the others'. The first three are measurements and produce numbers; only the last needs eyes.
   - `scripts/pair_view.py` — **content, presence, style.** It first **crops the screenshot's chrome bands** (status bar, OS nav) so its content lines up with the chrome-less design export, **then** grids both at the same coordinates, computes a real pixel diff, and composes them into one side-by-side image with every cell whose diff exceeds a threshold flagged in amber. Skip straight to `grid_overlay.py` on two independently-gridded images and cell `C4` in one is very likely a different region than `C4` in the other — the chrome heights don't match, so nothing built on that alignment is trustworthy.
+  - `scripts/text_audit.py` — **content: the exact strings, from the view hierarchy.** Not from the image: reading copy off a screenshot is OCR by another name, and it is least reliable on the small diacritics that matter most. Every mismatch is Critical; there is no tolerance on text.
+  - `scripts/typography_audit.py` — **type: font size and font weight, as ratios.** It measures each text band's x-height and stroke-thickness-over-x-height, both against the design and against its own screen's body text. It never claims an `sp` value — that isn't in a screenshot — but "the heading renders at 0.67× the design's size and at body weight" is measured, and it fails the case.
   - `scripts/spacing_audit.py` — **geometry: gaps, element heights, side margins, measured in design px/dp.** This is not optional on a spacing question, because `pair_view.py` structurally cannot answer it: to align cells it resizes the design onto the screenshot's width *and* height, which rescales the design's vertical rhythm onto the device's — so a screen whose every padding is inflated by one factor diffs **clean**, and when the aspect ratios differ (an iOS export vs an Android screen: routine) it suppresses its own flags entirely. `spacing_audit.py` scales by **width only**, segments both images into element bands, and compares gap by gap; since gaps are differences between positions, the result survives different chrome, screen size, and density.
 
 Findings are classified **Critical** (a user would notice and be blocked — overlap, clipping, off-screen content, missing element — or a *measured* deviation outside tolerance) or **Minor** (subjective, or measured but small and localized), and the severity decides the verdict: any Critical → ❌ FAIL, only Minor → 🔍 REVIEW, clean → ✅ PASS. The deliverable is an annotated image with the defective cells washed red, plus the measured numbers in the finding text.
@@ -159,10 +169,20 @@ python3 scripts/pair_view.py report/figma/TC-010_default.png report/screenshots/
     --cols 6 --rows 13 --crop-actual-top 6% --crop-actual-bottom 4% \
     --out report/grid/TC-010_default-pair.png
 
-# Design mode, part 2 — geometry: MEASURES gaps / heights / margins in design px-dp
+# Design mode, part 2 — content: EXACT text, from the hierarchy (never from pixels)
+maestro hierarchy > /tmp/TC-010.json
+python3 scripts/text_audit.py --expected report/figma/TC-010_expected.json \
+    --actual /tmp/TC-010.json --out report/text/TC-010_default.json
+
+# Design mode, part 3 — geometry: MEASURES gaps / heights / margins in design px-dp
 python3 scripts/spacing_audit.py report/figma/TC-010_default.png report/screenshots/TC-010_default.png \
     --crop-design-top 6% --crop-design-bottom 2% --crop-actual-top 4% \
     --out report/grid/TC-010_default-spacing.png
+
+# Design mode, part 4 — type: MEASURES font size and weight as ratios
+python3 scripts/typography_audit.py report/figma/TC-010_default.png report/screenshots/TC-010_default.png \
+    --crop-design-top 6% --crop-design-bottom 2% --crop-actual-top 4% --design-width-dp 390 \
+    --out report/grid/TC-010_default-type.png
 
 # …scan the gridded/paired image cell by cell (accounting for every flagged
 # cell first in design mode), then mark only the cells with visible evidence
@@ -171,7 +191,7 @@ python3 scripts/grid_overlay.py report/screenshots/TC-010_default.png \
     --cols 6 --rows 13 --highlight "E2:F3" --out report/vision/TC-010_default-report.png
 ```
 
-**Read `visual-review.md` before running a Tier 3 pass.** The full method is there, and so are the two judgment calls that decide whether the result is trustworthy: what vision can and cannot prove (vision itself estimates — so spacing/size/margin questions go to `spacing_audit.py`, which measures them, while `fontSize`/token values still can't come from a screenshot at all), and the **data-state vs. design-state** rule that stops the most common false FAIL (the app showing three items where the design shows six is *data*, not a defect).
+**Read `ui-metrics.md` and `visual-review.md` before running a Tier 3 pass.** Between them they carry the two judgment calls that decide whether the result is trustworthy: which properties are measured versus estimated (and therefore which findings may fail a case and which must stay 🔍 REVIEW), and the **data-state vs. design-state** rule that stops the most common false FAIL — the app showing three items where the design shows six is *data*, not a defect.
 
 A clean Tier 3 pass is also the natural moment to **promote the screenshot to a Tier 2 baseline** — vision just confirmed it's correct, so it's a baseline you can trust. That's the intended graduation: Tier 3 finds and confirms; Tiers 1 and 2 lock it in for every future run.
 
@@ -182,7 +202,7 @@ A clean Tier 3 pass is also the natural moment to **promote the screenshot to a 
 **At authoring time (Agent in the loop, once per TC):**
 1. Name the **subject under test** — the region this TC is about; focus there.
 2. Mask the chrome bands; classify content-area elements static vs. dynamic.
-3. **Tier 3 pass:** grid the capture and scan it cell by cell — this is what tells you the screen is actually correct before you encode anything, and it catches layout defects no assertion would name.
+3. **Tier 3 pass:** run the measurements (`text_audit.py`, `spacing_audit.py`, `typography_audit.py`) and read their JSON, then grid the capture and scan it cell by cell. This is what tells you the screen is actually correct before you encode anything — the measurements settle parity, the scan catches the layout defects no assertion and no ratio would name.
 4. **Tier 1:** turn every static fact into an `assertVisible`/`assertNotVisible`/property assertion in the YAML.
 5. **Tier 2 (if requested):** promote the vision-approved screenshot to the baseline and record its masks sidecar.
 
@@ -197,8 +217,8 @@ A clean Tier 3 pass is also the natural moment to **promote the screenshot to a 
 
 - All Tier 1 assertions pass (and Tier 2 within threshold, if used; Tier 3 clean, if run) → **✅ PASS**
 - A cosmetic-only Tier 2 drift the user accepts → **✅ PASS** with a note (and update the baseline)
-- A failed Tier 1 assertion, Tier 2 drift over threshold on a static region, or a **Critical** Tier 3 finding → **❌ FAIL**
-- Only **Minor** Tier 3 findings, or exact typography/spacing parity that vision can't measure → **🔍 REVIEW** (evidence captured, a human decides)
+- A failed Tier 1 assertion, Tier 2 drift over threshold on a static region, **any text mismatch or text defect**, **any measured spacing / size / weight ratio outside tolerance**, or any other **Critical** Tier 3 finding → **❌ FAIL**
+- Only **Minor** Tier 3 findings, or an observation nothing measured — a colour impression, a `low`-confidence weight reading, an `INCONCLUSIVE` audit — → **🔍 REVIEW** (evidence captured, a human decides)
 
 When you report a FAIL, state the reasoning so a developer can trust it — name the element, say why it's static (not chrome or API content), and quote design vs. actual. For a Tier 3 FAIL, name the cell(s). Evidence links the Figma design, the app capture, and whichever artifact proved it: the Tier 2 heatmap or the Tier 3 annotated image.
 

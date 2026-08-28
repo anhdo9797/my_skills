@@ -1,0 +1,303 @@
+# Copy to .circleci/config.yml
+#
+# The pipeline prepares a machine and puts secrets where THIS project expects
+# them. Fastlane does everything else: build, upload, Notion page, Discord
+# message. Because the notification logic lives in lanes, a release can be
+# reproduced locally with the same command CI runs.
+#
+# Required CircleCI project environment variables (Project Settings ->
+# Environment Variables), each holding the base64 of a local file:
+#
+#   ENV_DEV_FILE          base64 of fastlane/.env.dev
+#   ENV_PROD_FILE         base64 of fastlane/.env.prod
+#   GOOGLE_SERVICES_JSON  base64 of android/app/google-services.json
+#   ASC_KEY_P8            base64 of the App Store Connect .p8 key
+#
+#   macOS:  base64 -i fastlane/.env.prod | pbcopy
+#   Linux:  base64 -w0 fastlane/.env.prod
+#
+# The destination paths are declared per job in SECRET_FILES below. They are the
+# part that changes between projects — read references/env-layouts.md before
+# copying this file, and point each entry at the path this project actually
+# reads.
+
+version: 2.1
+
+orbs:
+  flutter: circleci/flutter@3.0.0
+
+parameters:
+  notifications_only:
+    type: boolean
+    default: false
+
+commands:
+  select_flavor:
+    description: Choose the Fastlane environment from the branch name.
+    steps:
+      - run:
+          name: Select flavor
+          command: |
+            if [[ "$CIRCLE_BRANCH" =~ ^(build|develop) ]]; then
+              echo 'export FLAVOR=dev' >> "$BASH_ENV"
+            else
+              echo 'export FLAVOR=prod' >> "$BASH_ENV"
+            fi
+            source "$BASH_ENV"
+            echo "Flavor: $FLAVOR (branch: $CIRCLE_BRANCH)"
+
+  decode_secret_files:
+    description: >
+      Restore base64 CI variables into the files this project reads them from.
+      The mapping comes from the job's SECRET_FILES variable, one
+      CI_VARIABLE=destination/path per line, so each project declares its own
+      layout instead of inheriting someone else's.
+    steps:
+      - run:
+          name: Decode secret files
+          command: |
+            if [ -z "${SECRET_FILES:-}" ]; then
+              echo "SECRET_FILES is not set for this job."
+              exit 1
+            fi
+
+            failed=0
+            while IFS= read -r entry; do
+              entry="${entry%$'\r'}"
+              entry="$(printf '%s' "$entry" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+              case "$entry" in ''|'#'*) continue ;; esac
+
+              variable="${entry%%=*}"
+              destination="${entry#*=}"
+              if [ "$variable" = "$entry" ] || [ -z "$variable" ] || [ -z "$destination" ]; then
+                echo "Invalid SECRET_FILES entry: $entry"
+                failed=1
+                continue
+              fi
+
+              value="${!variable:-}"
+              if [ -z "$value" ]; then
+                echo "Missing CI variable: $variable"
+                failed=1
+                continue
+              fi
+
+              mkdir -p "$(dirname "$destination")"
+              # The value is a secret: decode it, never echo it.
+              printf '%s' "$value" | base64 --decode > "$destination"
+              if [ ! -s "$destination" ]; then
+                echo "Decoded file is empty: $destination"
+                failed=1
+                continue
+              fi
+
+              echo "  $variable -> $destination ($(wc -c < "$destination" | tr -d ' ') bytes)"
+            done <<< "$SECRET_FILES"
+
+            [ "$failed" -eq 0 ] || exit 1
+
+  load_dotenv:
+    description: >
+      Export a decoded dotenv file into $BASH_ENV so every later step sees the
+      variables, not only Fastlane. Needed whenever the project keeps its env
+      outside fastlane/, or when steps other than Fastlane read it.
+    parameters:
+      path:
+        type: string
+    steps:
+      - run:
+          name: Load << parameters.path >> into the job environment
+          command: |
+            # Runtime shell expansion still applies here, so a path such as
+            # ".env.${FLAVOR}" resolves against the flavor chosen earlier.
+            path="<< parameters.path >>"
+            if [ ! -f "$path" ]; then
+              echo "Dotenv file not found: $path"
+              exit 1
+            fi
+
+            loaded=0
+            while IFS= read -r line; do
+              line="${line%$'\r'}"
+              case "$line" in ''|'#'*) continue ;; esac
+              case "$line" in *=*) ;; *) continue ;; esac
+
+              key="${line%%=*}"
+              key="${key#export }"
+              key="$(printf '%s' "$key" | tr -d '[:space:]')"
+              case "$key" in ''|*[!A-Za-z0-9_]*) continue ;; esac
+
+              value="${line#*=}"
+              case "$value" in
+                \"*\") value="${value#\"}"; value="${value%\"}" ;;
+                \'*\') value="${value#\'}"; value="${value%\'}" ;;
+              esac
+
+              # Only the key is printed; the value goes straight to $BASH_ENV.
+              printf 'export %s=%q\n' "$key" "$value" >> "$BASH_ENV"
+              loaded=$((loaded + 1))
+            done < "$path"
+
+            source "$BASH_ENV"
+            echo "Exported $loaded variable(s) from $path."
+
+  setup_ruby:
+    description: Install the Ruby gems Fastlane needs, with a dependency cache.
+    steps:
+      - restore_cache:
+          keys:
+            - gems-v1-{{ checksum "Gemfile.lock" }}
+            - gems-v1-
+      - run:
+          name: Install gems
+          command: |
+            gem install bundler --no-document --conservative
+            bundle config set --local path 'vendor/bundle'
+            bundle install --jobs=4 --retry=3
+      - save_cache:
+          key: gems-v1-{{ checksum "Gemfile.lock" }}
+          paths:
+            - vendor/bundle
+
+  install_release_tools:
+    description: Ensure the notification scripts have curl and jq available.
+    steps:
+      - run:
+          name: Install curl and jq
+          command: |
+            if command -v jq >/dev/null 2>&1 && command -v curl >/dev/null 2>&1; then
+              echo "curl and jq already present."
+              exit 0
+            fi
+            if command -v apt-get >/dev/null 2>&1; then
+              sudo apt-get update -qq && sudo apt-get install -y -qq curl jq
+            elif command -v brew >/dev/null 2>&1; then
+              HOMEBREW_NO_AUTO_UPDATE=1 brew install jq
+            else
+              echo "Install curl and jq in the job image."
+              exit 1
+            fi
+
+  verify_release_notes:
+    description: Fail before the build when the release notes are missing.
+    steps:
+      - run:
+          name: Check release notes
+          command: |
+            if [ ! -f release_notes.txt ]; then
+              echo "release_notes.txt not found at the repository root."
+              exit 1
+            fi
+            echo "Release notes found ($(wc -l < release_notes.txt | tr -d ' ') lines)."
+
+  prepare_release_env:
+    description: The setup every release job shares.
+    steps:
+      - checkout
+      - select_flavor
+      - verify_release_notes
+      - decode_secret_files
+      - load_dotenv:
+          path: fastlane/.env.${FLAVOR}
+      - setup_ruby
+      - install_release_tools
+
+jobs:
+  android_distribution:
+    docker:
+      - image: cimg/android:2025.04.1
+    resource_class: large
+    environment:
+      FASTLANE_SKIP_UPDATE_CHECK: "true"
+      FASTLANE_DISABLE_ANIMATION: "true"
+      LC_ALL: en_US.UTF-8
+      LANG: en_US.UTF-8
+      # Destination paths follow THIS project's layout. A project that keeps its
+      # dotenv at the repository root would write ".env.prod" here instead, and
+      # change the load_dotenv path in prepare_release_env to match.
+      SECRET_FILES: |
+        ENV_DEV_FILE=fastlane/.env.dev
+        ENV_PROD_FILE=fastlane/.env.prod
+        GOOGLE_SERVICES_JSON=android/app/google-services.json
+    steps:
+      - prepare_release_env
+      - flutter/install_sdk_and_pub:
+          version: 3.35.6
+      - run:
+          name: Build, distribute, and notify
+          command: bundle exec fastlane android firebase_distribution --env "$FLAVOR"
+      - store_artifacts:
+          path: build/app/outputs/apk
+          destination: apk
+
+  ios_distribution:
+    macos:
+      xcode: 16.4.0
+    resource_class: macos.m1.medium.gen1
+    environment:
+      FASTLANE_SKIP_UPDATE_CHECK: "true"
+      FASTLANE_DISABLE_ANIMATION: "true"
+      LC_ALL: en_US.UTF-8
+      LANG: en_US.UTF-8
+      SECRET_FILES: |
+        ENV_DEV_FILE=fastlane/.env.dev
+        ENV_PROD_FILE=fastlane/.env.prod
+        ASC_KEY_P8=fastlane/private_keys/AuthKey.p8
+    steps:
+      - prepare_release_env
+      - flutter/install_sdk_and_pub:
+          version: 3.35.6
+      - run:
+          name: Build, upload to TestFlight, and notify
+          command: bundle exec fastlane ios testflight_distribution --env "$FLAVOR"
+      - store_artifacts:
+          path: build/ios/ipa
+          destination: ipa
+
+  release_notifications:
+    # Re-announce a build that already shipped, without rebuilding it. Notion or
+    # Discord being briefly unreachable should not cost a 40-minute rebuild.
+    docker:
+      - image: cimg/ruby:3.3
+    parameters:
+      platform:
+        type: enum
+        enum: ["android", "ios"]
+        default: "android"
+    environment:
+      SECRET_FILES: |
+        ENV_DEV_FILE=fastlane/.env.dev
+        ENV_PROD_FILE=fastlane/.env.prod
+    steps:
+      - prepare_release_env
+      - run:
+          name: Publish Notion and Discord notifications
+          command: |
+            bundle exec fastlane << parameters.platform >> \
+              publish_current_release_notifications --env "$FLAVOR"
+
+workflows:
+  distribute:
+    when:
+      not: << pipeline.parameters.notifications_only >>
+    jobs:
+      - android_distribution:
+          filters:
+            branches:
+              only:
+                - /^build[/_].*/
+                - /^release[/_].*/
+      - ios_distribution:
+          filters:
+            branches:
+              only:
+                - /^build[/_].*/
+                - /^release[/_].*/
+
+  notifications_only:
+    # Trigger from the CircleCI UI or API with the notifications_only parameter
+    # set to true.
+    when: << pipeline.parameters.notifications_only >>
+    jobs:
+      - release_notifications:
+          platform: android
