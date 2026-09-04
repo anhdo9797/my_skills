@@ -21,6 +21,11 @@ my_skills/
 │   ├── DOC.md               # Detailed technical documentation
 │   ├── scripts/             # Hierarchy filtering and screenshot comparison tools
 │   └── references/          # Maestro commands, YAML flows, inspection, and reporting
+├── review-bitbucket-pr/     # Bitbucket Pull Request Review Skill
+│   ├── SKILL.md             # Review workflow, modes, and stack selection
+│   ├── references/          # Review contract + per-stack detector profiles
+│   ├── scripts/             # Bitbucket Cloud/Server PR URL parser
+│   └── evals/               # Eval prompts and mock connector fixtures
 ├── docs/                    # Reference specifications & source documents
 └── README.md                # Root repository documentation
 ```
@@ -58,6 +63,22 @@ Automates mobile QA testing by converting test plans into executable [Maestro](h
 * Context-efficient screen inspection using [`scripts/filter_hierarchy.py`](maestro-test-executor/scripts/filter_hierarchy.py).
 * Three-tier UI validation: Maestro assertions and pixel-diff baselines run unattended in CI ([`scripts/compare_screenshots.py`](maestro-test-executor/scripts/compare_screenshots.py)), while an on-demand **visual review** grids the screenshot ([`scripts/grid_overlay.py`](maestro-test-executor/scripts/grid_overlay.py)) and scans it cell-by-cell for clipping, overlap, and misalignment — auto-failing on serious defects and returning an annotated image that marks exactly which cells are wrong.
 * Living `report.md` resume/upsert mechanism across multi-session test executions.
+
+
+### 3. `review-bitbucket-pr` — Bitbucket Pull Request Review
+* **Path:** [`review-bitbucket-pr/`](review-bitbucket-pr/)
+* **Skill Entrypoint:** [`review-bitbucket-pr/SKILL.md`](review-bitbucket-pr/SKILL.md)
+* **Review Contract:** [`review-bitbucket-pr/references/review-contract.md`](review-bitbucket-pr/references/review-contract.md)
+
+**Description:**
+Reviews a pull request on any Bitbucket Cloud or Bitbucket Server repository. Fetches the diff through a Bitbucket MCP connector, validates every candidate finding against the repository's own conventions and reachable code paths, posts evidence-backed inline comments in Vietnamese, and returns a severity summary with a merge recommendation. Never approves, merges, or edits code.
+
+**Key Features:**
+* **Live and dry-run modes** — dry run replays a local diff, patch, or fixture with no connector and posts nothing, so a review can be previewed or tested offline.
+* **Stack profiles** — universal quality gates in the review contract, with per-ecosystem detectors in [`references/stacks/`](review-bitbucket-pr/references/stacks/); [`deriving-a-profile.md`](review-bitbucket-pr/references/stacks/deriving-a-profile.md) covers repositories with no written profile.
+* **Three coverage gates** — user-facing copy, complexity, and compatibility, tracked per changed hunk so no hunk is silently skipped.
+* **Deterministic URL parsing** via [`scripts/parse_pr_url.py`](review-bitbucket-pr/scripts/parse_pr_url.py), which rejects GitHub/GitLab URLs instead of misreading them.
+* Evidence threshold and deduplication rules that suppress style noise and findings an existing unresolved comment already covers.
 
 ---
 

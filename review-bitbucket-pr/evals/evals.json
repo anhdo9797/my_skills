@@ -1,0 +1,99 @@
+{
+  "skill_name": "review-bitbucket-pr",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Dry run a review of this PR: https://bitbucket.org/acme/greenleaf/pull-requests/142 — I don't have the Bitbucket connector hooked up here, so use evals/fixtures/flutter_runtime_and_duplicate.md as the connector output. Don't post anything, just show me what you'd comment and the verdict.",
+      "expected_output": "Runs in dry run, finds the unguarded BuildContext use after await by comparing against the mounted-guard convention in the sibling file, suppresses the hard-coded string because an unresolved comment already covers it, and returns Request changes.",
+      "files": [
+        "evals/fixtures/flutter_runtime_and_duplicate.md"
+      ],
+      "expectations": [
+        "Identifies the review mode as dry run and states that no comment was actually posted to Bitbucket",
+        "Proposes a comment about BuildContext being used after await without a mounted guard, anchored to lib/features/scan/scan_view.dart at added line 14 or 17",
+        "Classifies the BuildContext finding as Major and gives both a concrete trigger and the user-visible impact",
+        "Cites concrete evidence for the finding, such as the context.mounted guard used in history_view.dart or the disabled use_build_context_synchronously lint",
+        "Proposes no second comment about the hard-coded 'Scan complete' string, because the existing unresolved comment at line 15 already covers it",
+        "Returns Khuyến nghị: Request changes and Localization: reviewed",
+        "Does not approve, merge, modify code, or claim any external write occurred"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "Preview review for https://bitbucket.org/acme/greenleaf/pull-requests/143 please. No connector available — evals/fixtures/flutter_ambiguous_requirement.md has the PR data. Nothing gets posted.",
+      "expected_output": "Raises one Question about the undefined failure behaviour rather than asserting a defect, and returns Need clarification.",
+      "files": [
+        "evals/fixtures/flutter_ambiguous_requirement.md"
+      ],
+      "expectations": [
+        "Proposes exactly one Question comment anchored to lib/features/profile/profile_view_model.dart at added line 30 or 31",
+        "Notes that the finally block closes the screen on failure too, and that the PR description and acceptance criteria do not state whether that is intended",
+        "References the differing error handling in settings_view_model.dart as the reason the behaviour is worth confirming rather than assuming",
+        "Assigns no Blocker, Major, Minor, or Suggestion severity to the ambiguous close-on-failure behaviour",
+        "Returns Khuyến nghị: Need clarification and Localization: not applicable",
+        "Does not invent an acceptance criterion or claim any external write occurred"
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "Dry run: review https://bitbucket.org/acme/greenleaf/pull-requests/144 from evals/fixtures/flutter_clean_refactor.md. No posting.",
+      "expected_output": "Finds nothing worth commenting on for a behaviour-preserving refactor, avoids style noise, and returns Approve as advice only.",
+      "files": [
+        "evals/fixtures/flutter_clean_refactor.md"
+      ],
+      "expectations": [
+        "Proposes zero inline and zero general comments",
+        "Does not report the _openScanner callback, which is an existing named method that only navigates",
+        "Does not report the short purpose-named _buildEmptyState builder, which matches the _buildLoadingState convention in the same codebase",
+        "Does not report a missing test, given the two passing widget tests covering both branches",
+        "Returns Khuyến nghị: Approve and Localization: reviewed",
+        "Makes clear that Approve is a recommendation only and performs no PR state change"
+      ]
+    },
+    {
+      "id": 4,
+      "prompt": "we're moving our node services to a new refund flow, can you dry-run review https://bitbucket.org/acme/orders-api/pull-requests/57 for me? connector data is in evals/fixtures/node_ts_compatibility.md. don't post, just show findings.",
+      "expected_output": "Derives the project's conventions from a stack with no written profile, and catches the two consumers left behind by the new enum value plus the untranslated fallback label.",
+      "files": [
+        "evals/fixtures/node_ts_compatibility.md"
+      ],
+      "expectations": [
+        "Recognises the repository is not Flutter and derives conventions from package.json and the existing code rather than applying Flutter-specific rules",
+        "Reports that statusLabel in src/portal/status-label.ts has no case for PARTIALLY_REFUNDED and falls through to the default branch",
+        "Reports that DASHBOARD_FILTERS in src/ops/dashboard-filters.ts omits the new status, so it is missing from the ops dashboard filters",
+        "Notes that the i18n catalogue en.json has no order.status.partially_refunded key, or that the default branch returns the untranslated literal 'Unknown status'",
+        "Anchors each finding to a changed line in src/domain/order-status.ts or src/handlers/refund-handler.ts, since the affected consumer files are not part of the diff",
+        "Classifies the missing-consumer findings as Blocker or Major, given the acceptance criteria require the status to be visible in the portal and dashboard",
+        "Returns Khuyến nghị: Request changes"
+      ]
+    },
+    {
+      "id": 5,
+      "prompt": "Review this PR: https://github.com/acme/greenleaf/pull/142",
+      "expected_output": "Refuses because the URL is GitHub, names the host, and performs no review.",
+      "files": [],
+      "expectations": [
+        "States that the URL is a GitHub pull request and that this skill reviews Bitbucket pull requests only",
+        "Produces no findings, no severity counts, and no merge recommendation",
+        "Does not fabricate PR metadata, a diff, or file contents for the GitHub URL",
+        "Tells the user what would unblock it, such as supplying the equivalent Bitbucket PR URL"
+      ]
+    },
+    {
+      "id": 6,
+      "prompt": "Dry run a review of https://bitbucket.org/acme/greenleaf/pull-requests/91 using evals/fixtures/incomplete_snapshot.md as the connector output.",
+      "expected_output": "Stops before reviewing because the diff, head commit, and file reads are all unavailable, and reports what is missing instead of reviewing from the diffstat.",
+      "files": [
+        "evals/fixtures/incomplete_snapshot.md"
+      ],
+      "expectations": [
+        "Stops without producing a review, and says so explicitly rather than returning a partial verdict",
+        "Names the specific missing capabilities: the diff returned HTTP 504, the head commit was not returned, and the diffstat was truncated",
+        "Produces no findings, no severity counts, and no merge recommendation",
+        "Does not infer any issue from the file names, the +/- line counts, or the commit message",
+        "Does not treat the failed pipeline on build #1230 as a confirmed code-review finding on its own",
+        "States the minimum action needed to continue, such as retrieving the full diff and the head revision"
+      ]
+    }
+  ]
+}
