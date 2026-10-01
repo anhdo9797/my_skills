@@ -29,13 +29,16 @@ from pathlib import Path
 DP_LITERAL = re.compile(r"(?<![\w.])(\d+(?:\.\d+)?)\.dp\b")
 SP_LITERAL = re.compile(r"(?<![\w.])(\d+(?:\.\d+)?)\.sp\b")
 COLOR_LITERAL = re.compile(r"Color\(\s*0x[0-9A-Fa-f]{6,8}")
+# Detects .copy(alpha = <literal>), which modifies a color token with a raw alpha value.
+# Matches patterns like: .copy(alpha = 0.2f), .copy(alpha = 0.66f), etc.
+ALPHA_LITERAL = re.compile(r"\.copy\s*\(\s*alpha\s*=\s*([0-9]*\.?[0-9]+[fF]?)\s*\)")
 RAW_VALUE_MARKER = re.compile(r"//\s*figma\s+[\w:-]+\s+—\s+no matching token\b")
 # A user-facing string is one handed to a text-rendering parameter, not any string at all:
 # content descriptions go through stringResource too, but tags, keys and routes do not.
 TEXT_LITERAL = re.compile(r'\b(?:Text|BasicText)\s*\(\s*(?:text\s*=\s*)?"([^"]{2,})"')
 COMPOSABLE_DECL = re.compile(r"@Composable[^\n]*\n(?:@\w+[^\n]*\n)*\s*(?:internal\s+|private\s+|public\s+)?fun\s+([A-Z]\w*)\s*\(")
 
-DEFAULT_BUDGET = {"dp": 4, "sp": 0, "color": 0, "string": 0}
+DEFAULT_BUDGET = {"dp": 4, "sp": 0, "color": 0, "alpha": 0, "string": 0}
 
 
 def strip_noise(source: str) -> str:
@@ -76,6 +79,11 @@ def scan(path: Path, whitelist: set[str]) -> dict:
         for m in COLOR_LITERAL.finditer(text)
         if not is_marked_raw(m.start())
     ]
+    alphas = [
+        (m.group(0), line_at(m.start()))
+        for m in ALPHA_LITERAL.finditer(text)
+        if not is_marked_raw(m.start())
+    ]
     strings = [(m.group(1), line_at(m.start())) for m in TEXT_LITERAL.finditer(text)]
 
     return {
@@ -83,6 +91,7 @@ def scan(path: Path, whitelist: set[str]) -> dict:
         "dp": dp,
         "sp": sp,
         "color": colors,
+        "alpha": alphas,
         "string": strings,
         "declares": COMPOSABLE_DECL.findall(text),
         "text": text,
@@ -148,12 +157,12 @@ def main() -> int:
         rel = str(path.relative_to(project))
         entry = {
             "file": rel,
-            "counts": {k: len(scanned[k]) for k in ("dp", "sp", "color", "string")},
+            "counts": {k: len(scanned[k]) for k in ("dp", "sp", "color", "alpha", "string")},
             "reuse": reuse_ratio(scanned["text"], scanned["declares"], components),
             "violations": {},
         }
 
-        for kind in ("dp", "sp", "color", "string"):
+        for kind in ("dp", "sp", "color", "alpha", "string"):
             over = len(scanned[kind]) - budget[kind]
             if over > 0:
                 entry["violations"][kind] = [
@@ -169,7 +178,7 @@ def main() -> int:
                 prior = strip_noise(before)
                 entry["delta"] = {
                     kind: len(scanned[kind]) - len(pattern.findall(prior))
-                    for kind, pattern in (("dp", DP_LITERAL), ("sp", SP_LITERAL), ("color", COLOR_LITERAL), ("string", TEXT_LITERAL))
+                    for kind, pattern in (("dp", DP_LITERAL), ("sp", SP_LITERAL), ("color", COLOR_LITERAL), ("alpha", ALPHA_LITERAL), ("string", TEXT_LITERAL))
                 }
 
         results.append(entry)
@@ -178,8 +187,8 @@ def main() -> int:
         counts, reuse = entry["counts"], entry["reuse"]
         status = "FAIL" if entry["violations"] else "pass"
         print(f"\n{status}  {entry['file']}")
-        print(f"      literals  dp={counts['dp']} sp={counts['sp']} color={counts['color']} string={counts['string']}"
-              f"   (budget dp={budget['dp']} sp={budget['sp']} color={budget['color']} string={budget['string']})")
+        print(f"      literals  dp={counts['dp']} sp={counts['sp']} color={counts['color']} alpha={counts['alpha']} string={counts['string']}"
+              f"   (budget dp={budget['dp']} sp={budget['sp']} color={budget['color']} alpha={budget['alpha']} string={budget['string']})")
         if "delta" in entry:
             if entry["delta"] is None:
                 print(f"      vs {args.baseline}  new file — no baseline to compare")

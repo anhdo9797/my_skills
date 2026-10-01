@@ -48,6 +48,27 @@ marker is what hands review the question with the evidence attached.
 Never emit a raw value with no marker, and never invent a token name that does not exist in
 the project.
 
+## Tag every generated composable with its Figma node
+
+A composable that came from an IR node carries that node's id, so verification can compare
+it to the design directly instead of guessing its boundary from pixels:
+
+```kotlin
+ToolCard(
+    modifier = Modifier
+        .figmaNode("17:39")
+        .fillMaxWidth(),
+)
+```
+
+**The tag must not ship.** `figmaNode` is a project-local helper that compiles to nothing
+unless a layout audit is running — see `references/pixel-fidelity.md` for the two-file
+pattern. Never leave a bare `testTag` in production composables for this purpose.
+
+A node you cannot tag — text inside a design-system component, a shape drawn in a `Canvas` —
+is **unverified, not passing**. `layout_assert.py` reports that count, and a screen where
+half the nodes are untagged has not been checked.
+
 ## Strings: chrome goes to resources, sample content goes to state
 
 Two kinds of text live in a Figma frame and they must not be treated the same way.
@@ -162,6 +183,43 @@ Box(Modifier.matchParentSize().wrapContentWidth(Alignment.Start).width(3.dp).bac
 ```
 
 `matchParentSize()`, or a `Row` with `Modifier.height(IntrinsicSize.Min)`, both work.
+
+## Layout contract — enforced, read `layout-contract.md` before writing a screen
+
+Four rules, checked by `scripts/layout_rules_check.py`, which **exits 1**. They exist because
+the frame is one width, one font scale, one string length, and the code has to survive all
+three changing.
+
+1. **No fixed dimension around text.** `heightIn(min = 54.dp)`, never `height(54.dp)`, on
+   anything containing a `Text`. Fixed sizes stay legal for icons, dividers, accent bars.
+2. **Every `Text` declares `maxLines` and `overflow`.** `maxLines = 1` alone clips mid-glyph
+   with no ellipsis — the string is truncated and nothing says so.
+3. **Exactly one child in a `Row` takes `weight(1f)`.** Without it a long string pushes the
+   trailing icon off screen; nothing clips and nothing warns.
+4. **Images carry the design's ratio** via `aspectRatio` + an explicit `ContentScale`.
+
+The two that are wrong most often, side by side:
+
+```kotlin
+// WRONG — long name pushes the chevron past the edge, and clips with no ellipsis
+Row {
+    Icon(fileIcon, null, Modifier.size(IconSize))
+    Text(output.fileName, maxLines = 1)
+    Icon(chevron, null, Modifier.size(IconSize))
+}
+
+// RIGHT — the text is the one that gives way
+Row(verticalAlignment = Alignment.CenterVertically) {
+    Icon(fileIcon, null, Modifier.size(IconSize))
+    Text(output.fileName, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+    Icon(chevron, null, Modifier.size(IconSize))
+}
+```
+
+Several of these choices — how many lines, ellipsise or wrap, `Crop` or `Fit` — the design
+**cannot answer**: it drew one string of one length. Ask about the ones where a default could
+hide something the reader needs (a filename, a size, a price); default the rest and record
+every one of them in `decisions.md`. The split and the defaults are in `layout-contract.md`.
 
 ## Responsiveness is not in the design
 

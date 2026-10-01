@@ -17,6 +17,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -40,6 +41,22 @@ def find_theme_files(sources: list[Path]) -> list[Path]:
     if themed:
         return themed
     return [p for p in sources if "MaterialTheme(" in p.read_text(encoding="utf-8", errors="replace")]
+
+
+def fingerprint_theme(theme_files: list[Path], project: Path) -> dict:
+    """Content hash per theme source file, keyed by project-relative path.
+
+    This is what lets resolve_tokens.py tell a current adapter from a stale one: a per-file
+    hash catches an edit (same files, different hash), and the file list itself — the dict's
+    keys, recomputed against the live theme the same way this scanner found it — catches a
+    file added to or removed from the theme package, which an edit-only hash would miss.
+    """
+    return {
+        "algorithm": "sha256",
+        "files": {
+            str(p.relative_to(project)): hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(theme_files)
+        },
+    }
 
 
 def balanced_block(text: str, open_idx: int, pair: str = "()") -> str:
@@ -118,18 +135,29 @@ def parse_palette(text: str) -> dict[str, str]:
     return palette
 
 
-def parse_color_scheme(text: str, palette: dict[str, str]) -> dict[str, str]:
-    """Resolve `primary = ComposerPalette.Mint` through the palette to a hex value."""
-    roles: dict[str, str] = {}
-    for fn in ("lightColorScheme(", "darkColorScheme("):
+def parse_color_scheme(text: str, palette: dict[str, str]) -> dict[str, dict[str, str]]:
+    """Resolve both the light and dark scheme, kept apart.
+
+    A single merged map cannot represent a project that ships both — collapsing them
+    (whichever direction) means one of the two schemes is simply wrong in the adapter, and
+    a Figma frame drawn against the scheme that lost gets resolved against the wrong
+    numbers with nothing to say so. Generation picks light by default and dark on request
+    (see resolve_tokens.py --dark); the adapter has to carry both for that to be a real
+    choice instead of a guess.
+    """
+    schemes: dict[str, dict[str, str]] = {}
+    for scheme_name, fn in (("light", "lightColorScheme("), ("dark", "darkColorScheme(")):
         idx = text.find(fn)
         if idx < 0:
             continue
         block = balanced_block(text, idx + len(fn) - 1)
+        roles: dict[str, str] = {}
         for role, ref in SCHEME_ROLE.findall(block):
             if ref in palette:
-                roles[role] = palette[ref]
-    return roles
+                roles.setdefault(role, palette[ref])
+        if roles:
+            schemes[scheme_name] = roles
+    return schemes
 
 
 WEIGHTS = {
@@ -426,6 +454,7 @@ def main() -> int:
         "project": project.name,
         "root": str(project),
         "generatedBy": "scan_design_system.py",
+        "fingerprint": fingerprint_theme(theme_files, project),
         "theme": theme,
         "components": components,
         "commands": DEFAULT_COMMANDS,
@@ -443,7 +472,8 @@ def main() -> int:
     print(f"wrote {args.out}")
     for group, values in dp_groups.items():
         print(f"  {group:12} {len(values)} tokens")
-    print(f"  {'palette':12} {len(palette)} colors -> {len(theme['colors'])} scheme roles")
+    scheme_summary = ", ".join(f"{name}:{len(roles)}" for name, roles in theme["colors"].items()) or "none found"
+    print(f"  {'palette':12} {len(palette)} colors -> {scheme_summary} scheme roles")
     overridden = sum(1 for s in theme["typography"].values() if s.get("source") == "project")
     print(f"  {'typography':12} {overridden}/{len(theme['typography'])} Material slots overridden "
           f"(rest are M3 defaults) + {len(theme['typeScale'])} project styles")

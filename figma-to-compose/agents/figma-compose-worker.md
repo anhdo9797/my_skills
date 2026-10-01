@@ -96,11 +96,39 @@ goes in the report and in the PR description, not in a stop decision.
 
 ### 4 · Generate
 
-Follow `{{SKILL_ROOT}}/references/generation.md`. Reuse before writing; token where the IR
-resolved one and a marked raw value where it did not; strings to `res/values/strings.xml`;
-existing adaptive behaviour preserved.
+Read `{{SKILL_ROOT}}/references/layout-contract.md` **before writing the screen** — those
+four rules are gated and will stop you at step 5 otherwise. Then follow
+`{{SKILL_ROOT}}/references/generation.md`: reuse before writing; token where the IR resolved
+one and a marked raw value where it did not; strings to `res/values/strings.xml`; existing
+adaptive behaviour preserved.
+
+**Handle the undecidable choices as you go.** The design drew one string of one length, so it
+cannot say how many lines a long one gets, whether it ellipsises or wraps, who shrinks in a
+Row, or `Crop` vs `Fit`. Split them:
+
+- **Risky** — text bound to state (file names, sizes, dates, counts) where the default could
+  hide what the reader needs. A filename ellipsised to `"VID_2026092…"` makes two files
+  indistinguishable. **Stop and ask.**
+- **Safe** — fixed copy the design drew, whose length you know. Take the documented default.
+
+Record **every** one of them, asked or defaulted, in `{{WORK_DIR}}/decisions.md` using the
+table in `layout-contract.md`. The `Needs sign-off` column is what a reviewer scans.
 
 ### 5 · Verify
+
+**The layout contract runs first and it blocks:**
+
+```bash
+python3 {{SKILL_ROOT}}/scripts/layout_rules_check.py --files {{TARGET_KT}}
+```
+
+Exit 1 means fix the code, not the rule. These are not style preferences — a flagged `Row`
+really does push its trailing icon off screen on a long string, a flagged `Text` really does
+clip mid-glyph with no ellipsis, a `Text` with no `color` really does render pale grey on the
+wrong theme, and a `weight()` on a pill's label really does stretch a 160dp button across the
+screen. If something legitimate trips a rule, say so in the report; do not add an exemption.
+
+Then the advisory summary — read its `alpha` count, not only `color`:
 
 ```bash
 python3 {{SKILL_ROOT}}/scripts/compose_quality_gate.py \
@@ -108,10 +136,24 @@ python3 {{SKILL_ROOT}}/scripts/compose_quality_gate.py \
     --files {{TARGET_KT}} --baseline HEAD --json audit/quality.json
 ```
 
-Fix what it flags, then render. Prefer the project's existing screenshot-test setup; if
-there is none, add the `screenshotTest` source set (AGP 8.5+) with a deterministic preview
-at the Figma frame's dp size. Then measure with `maestro-test-executor/scripts/` against
-`raw/design.png` and read the JSON before any image.
+An invented `.copy(alpha = 0.2f)` is a colour decision with no Figma node behind it, and it
+is how a solid brand-pink button ships as a pale smear. Treat it like any other raw value:
+justify it with a marker comment or remove it.
+
+**Then measure, and measuring is not optional.** Copy the templates from
+`{{SKILL_ROOT}}/assets/layout-audit/` into the project per that directory's README, tag each
+generated composable with its Figma node id, dump the bounds, and run:
+
+```bash
+python3 {{SKILL_ROOT}}/scripts/layout_assert.py --ir ir/screen.ui.json \
+    --actual audit/bounds.json --min-coverage 0.6 --json audit/layout.json
+```
+
+Exit 3 is `UNMEASURED` — no node was compared. It is a blocking state, not a footnote, and a
+report that claims convergence or fidelity without a number from this step is false. If
+tagging genuinely cannot be added to this project, say exactly why, and then the ink-band
+audits in `references/verification.md` become **mandatory** — `raw/design.png` against a real
+device screenshot. Read the JSON before any image.
 
 ### 6 · Repair, bounded
 
@@ -119,11 +161,24 @@ at the Figma frame's dp size. Then measure with `maestro-test-executor/scripts/`
 finding family per iteration, layout and style only. Stopping without converging is a
 result — report the remaining findings as numbers.
 
-## Deliverable — `{{WORK_DIR}}/REPORT.md`
+## Deliverables
+
+Two files, both required.
+
+### `{{WORK_DIR}}/decisions.md`
+
+Every choice the design could not make, asked or defaulted — the table format is in
+`layout-contract.md`. A run with an empty table either made no risky choices or missed them,
+and a reviewer cannot tell which, so write the safe ones down too.
+
+### `{{WORK_DIR}}/REPORT.md`
 
 ```markdown
 ## Verdict
 GENERATED | CONVERGED | STOPPED UNCONVERGED | EXTRACTION FAILED
+
+## Layout contract
+PASS, or the violations that remain and why they could not be fixed
 
 ## Raw values in the generated screen
 resolved N · snapped N · raw N · components reused N

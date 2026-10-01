@@ -65,3 +65,56 @@ One frame is one state. A screen with loading / empty / error / content states n
 `nodeId` per state, extracted separately into `ir/<state>.ui.json`. Do not try to infer
 the empty state from the populated one — the design usually differs by more than removing
 rows, and inferring it is how a pipeline invents UI that no designer drew.
+
+## get_metadata is depth-bounded; plan for stub responses
+
+`get_metadata` returns a bounded tree. When the Figma frame you need is deeper than the
+budget, it comes back as a self-closing stub with no children — and it looks like valid
+output.
+
+**Real example:** Against file `CY141mXMtUzL6qWmhosLlh`:
+
+- `get_metadata(fileKey, "5-8468")` (a section) returned its 7 child frames as stubs,
+  self-closing, no children
+- `get_metadata(fileKey, "5-8469")` (one of those frames, the screen to implement)
+  returned: `<frame id="5:8469" name="Connect" x="130" y="151" width="390" height="1017" />`
+  — no children at all
+- `get_metadata(fileKey, "5-8470")` (the direct child of 5:8469) returned a correct, fully
+  nested tree about 4 levels deep
+
+**How to tell a stub from a leaf node:**
+A stub is self-closing and has no children, but its Figma screenshot plainly has content.
+A real leaf node is a text or vector — primitive types that have no children by design.
+
+**The descend-and-stitch procedure:**
+When a parent comes back shallow but you know it has content, call `get_metadata` on each
+of its children (by id). Then hand-assemble one well-formed `metadata.xml` whose root is
+your target frame, integrating the deeper responses beneath it.
+
+**Fidelity requirement:** The stitched output must stay faithful to Figma — same ids,
+same x/y/w/h, no invented nodes. The IR will derive layout from geometry, and a wrong
+coordinate silently becomes wrong Compose.
+
+## Establishing Figma access: call, don't ping
+
+To prove Figma MCP is ready, **make one cheap real call against the target node**, not a
+port check or process check. Call `get_metadata` on the node you are about to extract. If
+it returns a valid tree (stub or full), the MCP works. If it fails, stop.
+
+**Wrong signal:** A task might tell you to check whether the Figma Desktop MCP server's
+TCP port `127.0.0.1:3845` is open. This port proves nothing — a project can wire to any
+Figma MCP transport (desktop, remote, different instance), so an open or closed port says
+nothing about your actual capability.
+
+**Real example:** In a production run, the port stayed closed the entire time, and the
+worker polled it for eight minutes before nearly aborting with `EXTRACTION FAILED`. The
+Figma MCP was working perfectly — it was just a different instance, not the desktop one.
+
+**The correct test:** `get_metadata(fileKey, targetNodeId)` against the exact frame you
+will extract. The response is your readiness signal:
+
+- Valid tree (any depth, even a stub) → proceed
+- Failed call → stop and diagnose the MCP connection
+
+A stub response (see above) is **not** a failure signal. It is a valid response that needs
+the descend-and-stitch procedure.

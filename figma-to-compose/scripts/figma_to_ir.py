@@ -336,11 +336,21 @@ class Extractor:
         return node
 
 
-def strip_internals(node: dict) -> dict:
-    node = {k: v for k, v in node.items() if not k.startswith("_")}
-    if "children" in node:
-        node["children"] = [strip_internals(c) for c in node["children"]]
-    return node
+def strip_internals(node: dict, origin: tuple[float, float] = (0.0, 0.0)) -> dict:
+    """Drop the working fields, but keep the design geometry as an absolute `rect`.
+
+    `layout` says how to *build* the node (fill, wrap, gap); `rect` says where the design
+    actually put it. Generation reads the first; per-node verification
+    (`layout_assert.py`) reads the second, and without it the only way to check a node's
+    position is to guess its boundary from pixels.
+    """
+    x = origin[0] + node["_x"]
+    y = origin[1] + node["_y"]
+    out = {k: v for k, v in node.items() if not k.startswith("_")}
+    out["rect"] = {"x": round(x, 2), "y": round(y, 2), "w": round(node["_w"], 2), "h": round(node["_h"], 2)}
+    if "children" in out:
+        out["children"] = [strip_internals(c, (x, y)) for c in node["children"]]
+    return out
 
 
 # ---------------------------------------------------------------- main
@@ -394,7 +404,10 @@ def main() -> int:
         },
         "frame": {"width": _num(root_el, "width"), "height": _num(root_el, "height")},
         "platformChrome": extractor.chrome,
-        "root": strip_internals(root),
+        # Normalize the frame to (0,0): where the designer dropped it on the Figma canvas
+        # is an artefact, and every rect has to be frame-relative to be comparable with
+        # what Compose reports for the screen's content root.
+        "root": strip_internals(root, (-root["_x"], -root["_y"])),
         "assets": extractor.assets,
         "unsupported": extractor.unsupported,
         "mapping": {"resolvedCount": 0, "unmapped": [], "resolved": False},

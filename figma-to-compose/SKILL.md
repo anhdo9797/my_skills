@@ -52,7 +52,9 @@ Read the reference when you reach its phase, not before.
 | 2 · IR | `references/ui-ir-schema.md` | Building or reading `screen.ui.json` |
 | 2b · Tokens | `references/adapter-spec.md` | **Optional** — the project has a design system |
 | 3 · Generate | `references/generation.md` | Writing Compose from IR |
+| 3b · Layout contract | `references/layout-contract.md` | **Before writing a screen** — the rules the gate enforces |
 | 4 · Verify | `references/verification.md` | Rendering and measuring |
+| 4b · Pixel fidelity | `references/pixel-fidelity.md` | **Before the first layout assertion**, and for any pixel-perfect run |
 | 5 · Repair | `references/repair-loop.md` | A measurement came back out of band |
 
 ## Phase 1 — Extract
@@ -99,8 +101,34 @@ may not introduce raw values. Skip the whole step on a project with no design sy
 when the design is a visual direction the codebase has not adopted; the generator handles
 raw values fine.
 
+**A stale adapter exits 3, and there is no override.** The adapter carries a per-file hash of
+the theme sources it was built from; `resolve_tokens.py` recomputes them first and refuses if
+anything was added, removed or edited. This is the one place in the token path that is strict,
+because the failure is not a judgement call: in a real run the adapter was built at 21:57, the
+same task legitimately added a brand palette at 22:0x, and the 22:27 mapping report called
+`#FD75A7` unmapped when `PairPulsePink500` had existed for half an hour. An advisory warning
+is precisely what went unread. Regenerating costs one second.
+
 Component hints in the adapter are guesses until a human curates them. Prefer under-mapping:
 a missed match costs one hint, a wrong match costs a rewrite.
+
+### Pixel-perfect mode — declared, not default
+
+Snapping 15dp to `spacing.md`(16) is a deliberate 1dp loss, and a real run spent it **85**
+times. You cannot snap 85 times and be pixel-perfect, so this is a per-screen decision:
+
+```bash
+python3 scripts/resolve_tokens.py … --pixel-perfect
+```
+
+In that mode a snap is reported as **fidelity lost** with the exact dp cost, not as a
+resolution — which forces the theme to carry the design's real values rather than rounding
+the design to the theme. Pair it with `layout_assert.py --tolerance 0.5 --strict`.
+
+Worth it for a surface where the designer's exact rhythm is the product. Not worth it for an
+internal settings list. The precondition and the honest limits — the device is 411.4dp wide
+and the frame is 390dp, so "pixel-perfect" can only mean *at the design's width* — are in
+`references/pixel-fidelity.md`.
 
 ## Phase 3 — Generate Compose
 
@@ -117,12 +145,49 @@ Rules in full: `references/generation.md`. The short version:
 
 ## Phase 4 — Verify
 
-Two loops, and the fast one carries the repair cycle:
+Five checks, in this order — each answers something the next cannot:
 
-| Loop | Tool | Cost | Catches |
+| | Check | Cost | Answers |
 |---|---|---|---|
-| **Fast** | Compose Preview screenshot test on the JVM (`screenshotTest`, Roborazzi, Paparazzi) | seconds | layout, spacing, typography, color |
-| **Slow** | Build + emulator + Maestro | minutes, **run once at the end** | real state, navigation, dynamic data, insets |
+| **0** | **Layout contract** — `layout_rules_check.py` | ~1s | **exits 1**: fixed dims around text, text with no overflow or no colour, rows that push their own icons out or stretch their own pill, images losing their ratio |
+| 1 | Literal summary (static) | ~1s | tokens vs raw values vs invented alpha — advisory |
+| 2 | **Layout assertion** — `layout_assert.py` | seconds | *exactly* where each node landed, in dp — **exits 3 if nothing was measured** |
+| 3 | **Material check** — human, magnified | minutes | glow, font, thin accents |
+| 4 | Ink-band audits | seconds | **mandatory** when check 2 cannot run |
+| — | Device run (emulator) | minutes | real state, navigation, insets — **once, at the end** |
+
+**Two checks block, and they block for opposite reasons.** Check 0 blocks on a *wrong
+answer*; check 2 blocks on *no answer*. The token gate and the literal summary stay advisory
+because they are judgement calls about a codebase.
+
+The layout contract is correctness: a screen that fails it matches the design at one width
+with one string length and breaks outside that. Measured on freshly generated screens: rows
+that push their own icons off screen, texts that clip with no ellipsis, and — the two newest
+rules — **six texts with no declared colour** (a `#141414` title rendering pale grey because
+it inherited `LocalContentColor` from a theme built for another product) and a `weight()` on
+a pill's label that turned a 160dp button into a full-width bar. Both of those shipped
+through a green run before R5 and R6 existed.
+
+**Check 2 is the primary measurement, not the pixel audits.** Tag each generated composable
+with its Figma node, read the real bounds back from `LayoutCoordinates`, compare dp to dp.
+It names the composable at fault and it sees a 3dp accent bar rendering at zero height —
+which every pixel ratio in a real run reported as green. Ink-band audits guess boundaries
+from pixels, cannot attribute a finding to a node, and are fooled by content differences.
+
+**The skill ships the instrumentation — `assets/layout-audit/`.** Earlier versions described
+check 2 as primary while requiring a tag helper and test fixture the skill did not provide,
+so on a fresh project it simply never ran, which is exactly the project it exists for. Copy
+the templates in, per that directory's README.
+
+**`UNMEASURED` is a verdict, not a footnote.** If no node was tagged and compared,
+`layout_assert.py` exits 3 — unconditionally, even without `--strict` — and the run may not
+use the words *converged*, *fidelity*, or *passing*. `STOPPED UNCONVERGED` means a real
+number exists and repair did not close it; that is an honest result. `UNMEASURED` is an
+absence of evidence, and a run that reports success from static gates alone has measured
+nothing. When tagging genuinely cannot be added, check 4 becomes **mandatory** rather than a
+fallback — commands in `references/verification.md`.
+
+The repair loop runs on check 2 plus the JVM render; the emulator never goes inside it.
 
 Never put the emulator inside the repair loop. Measurement contract and commands:
 `references/verification.md`.
@@ -161,10 +226,13 @@ it.
 
 | Script | Does | Required |
 |---|---|---|
-| `scripts/figma_to_ir.py` | Figma metadata → `screen.ui.json` | yes |
-| `scripts/scan_design_system.py` | Kotlin theme + composables → adapter skeleton | no |
-| `scripts/resolve_tokens.py` | Annotates IR with project tokens; reports the rest | no |
-| `scripts/compose_quality_gate.py` | Literal + reuse summary on generated Kotlin | no |
+| `scripts/figma_to_ir.py` | Figma metadata → `screen.ui.json` (incl. each node's design `rect`) | yes |
+| `scripts/layout_rules_check.py` | Layout contract gate — R1–R6, **exits 1** | **yes** |
+| `scripts/layout_assert.py` | Real node bounds vs design, per node, in dp — **exits 3 if nothing measured** | **yes**; `UNMEASURED` otherwise |
+| `assets/layout-audit/` | Kotlin templates that make `layout_assert.py` runnable on a bare project | with check 2 |
+| `scripts/scan_design_system.py` | Kotlin theme + composables → adapter, with a theme-source fingerprint | no |
+| `scripts/resolve_tokens.py` | Annotates IR with project tokens; **exits 3 on a stale adapter** | no |
+| `scripts/compose_quality_gate.py` | Literal, alpha and reuse summary on generated Kotlin | no |
 
 Measurement scripts are **not** duplicated here — `maestro-test-executor/scripts/`
 (`spacing_audit.py`, `typography_audit.py`, `text_audit.py`, `pair_view.py`,
