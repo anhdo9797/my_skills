@@ -32,7 +32,8 @@ under a hidden layer. Each becomes:
 { "id": "17:64", "name": "sec-title-edit", "reason": "mixed_text_styles" }
 ```
 
-in `unsupported[]`. The generator emits a `// TODO(figma 17:64): mixed_text_styles` at the
+in `unsupported[]`. The generator emits a plain `// TODO: unsupported node` (R7 forbids the
+node id in the comment; `unsupported[]` already carries it) at the
 right place and moves on. It never invents an approximation silently.
 
 ## Document shape
@@ -105,6 +106,37 @@ right place and moves on. It never invents an approximation silently.
   "children": [ /* nodes */ ]
 }
 ```
+
+## `sourceContext`: where the content lives when the tree is a skeleton
+
+The IR root carries `sourceContext` — the full `texts`, `styles` and `assets` maps from
+`context_to_ir.py`, flat and keyed by node id. It is not a backup copy. On a screen built
+from component instances it is **where most of the design actually is**, and generating from
+the tree alone produces a correct-looking, empty screen.
+
+`get_metadata` does not expand component instances. Eleven "Topic card" instances come back
+as eleven childless sibling nodes with geometry and nothing else. Measured on one real frame:
+
+```
+text    tree 12 + sourceContext 15 = 27/27
+style   tree  6 + sourceContext 88 = 94/94
+asset   tree  1 + sourceContext 25 = 26/26
+```
+
+Six of ninety-four styled nodes were in the tree. The per-instance tint, icon and label for
+all eleven cards existed only in `sourceContext`, and `ir_coverage_check.py` reported 100%
+— honestly, because the content did arrive. It now prints a note when the tree's share is
+this thin, so nobody discovers it the hard way.
+
+**What this costs you.** `sourceContext` is flat, so it has no notion of "card 3 of 11".
+Rebuilding that grouping means reading `raw/<node>/context.json` directly — the generated
+JSX names each variant and its colour in parallel ternary chains, and the node ids of a
+repeated component usually advance by a fixed stride. Verify the stride against the design
+rather than assuming it; an off-by-one here silently assigns the wrong colour to every card.
+
+**What this does not change.** The tree is still what you lay out from — direction, gap,
+padding and geometry are all there and all derived. `sourceContext` supplies what goes
+*inside* the boxes. Read both.
 
 ## The invariant that makes the gate work
 

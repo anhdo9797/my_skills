@@ -21,7 +21,49 @@ an existing `ComposerCard` that does the same job is the most common thing a rev
 back — so before writing a new composable, check the adapter's component list for the shape
 you are about to build.
 
-## Values: token when there is one, raw with a marker when there isn't
+## Before you generate: check where the content actually is
+
+Run `ir_coverage_check.py` and read its `tree N + sourceContext M` lines. If the tree's
+share is small, the screen is built from component instances and the tree is a geometric
+skeleton — the per-instance colours, icons and labels are in `sourceContext`, flat and keyed
+by node id. Generating from the tree alone yields eleven identical cards where the design
+has eleven tinted ones. `references/ui-ir-schema.md` explains how to rebuild the grouping.
+
+## Comments and KDoc carry no Figma
+
+**Nothing in the generated Kotlin may mention Figma, a node id, a frame name, or the design
+file.** Not in `//`, not in `/* */`, not in KDoc. This is gated; see rule R7 in
+`references/layout-contract.md`.
+
+```kotlin
+/** The screen's own bottom navigation (figma 5:8501 "Nav Bar"). */   // ✗
+/** Bottom navigation for the Connect screen. Taps are inert. */      // ✓
+
+.background(Color(0xFF00DC82))   // figma 17:34 — no matching token   // ✗
+.background(Color(0xFF00DC82))                                        // ✓
+```
+
+An earlier version of this skill required the opposite — every raw value carried a marker
+comment naming its node, and that was called "the whole point". It was wrong, for a reason
+worth stating because it generalises.
+
+**Traceability belongs in machine-readable places, and it already has two.**
+
+| Where | What it holds | Who reads it |
+|---|---|---|
+| `Modifier.figmaNode("5:8501")` | the node a composable came from | `layout_assert.py`, at runtime |
+| `ir/mapping-report.json` | every raw value, its node, why it stayed raw | review, the PR description |
+
+Both are checked. A comment is checked by nobody, so it is the one copy that silently rots
+when the design moves on — and it is the copy a reader has to scroll past on every line.
+Reviewers get the same information from the mapping report, with better fidelity, without
+the code carrying build-pipeline residue.
+
+KDoc exists to say what a composable **does** and what a caller must know. A reader of
+`features/connect/` is debugging an app, not auditing a design import. Write documentation
+for them.
+
+## Values: token when there is one, raw when there isn't
 
 When the IR node carries a resolved `token`, use it:
 
@@ -32,21 +74,22 @@ When the IR node carries a resolved `token`, use it:
 | `size 16 / weight 600` → `typography.titleMedium` | `style = MaterialTheme.typography.titleMedium` |
 | `radius: 22` → `radii.card` | `RoundedCornerShape(composerTokens.radii.card)` |
 
-When `token` is `null` — no adapter, or nothing matched — emit the raw value **with a
-marker naming the Figma node**:
+When `token` is `null` — no adapter, or nothing matched — emit the raw value plainly:
 
 ```kotlin
-.background(Color(0xFF00DC82))          // figma 17:34 — no matching token
-.padding(horizontal = 20.dp)            // figma 17:27 — no matching token
+.background(Color(0xFF00DC82))
+.padding(horizontal = 20.dp)
 ```
 
-The marker is the whole point. A bare `Color(0xFF00DC82)` is invisible in review; the same
-literal with its node id is a one-line conversation — *should this be a token, or is this
-screen genuinely off-palette?* Deciding that is review's job, not this pipeline's, and the
-marker is what hands review the question with the evidence attached.
+Prefer a named file-local val (`private val CardRadius = 16.dp`) over a bare literal where
+the project's conventions ask for one — that is readability, not traceability.
 
-Never emit a raw value with no marker, and never invent a token name that does not exist in
-the project.
+The question a reviewer needs to ask is still *should this be a token, or is this screen
+genuinely off-palette?* `ir/mapping-report.json` hands them that question with every node id
+attached, and `compose_quality_gate.py` counts what stayed raw. Neither needs the code to
+carry the evidence inline.
+
+Never invent a token name that does not exist in the project.
 
 ## Tag every generated composable with its Figma node
 
@@ -105,7 +148,8 @@ comes from state. A repeated row in the design is a **list of one composable**, 
 hardcoded copies.
 
 When the current UI state cannot supply the content, do not invent a source. Add the field
-to the state class, leave `// TODO(figma <node>): needs <field> from the ViewModel`, render
+to the state class, leave a plain `// TODO: needs <field> from the ViewModel` (no node id —
+R7), name the design node **in the report**, render
 the empty state, and say so in the report. An unwired list is an honest gap; a hardcoded one
 is a bug that ships.
 

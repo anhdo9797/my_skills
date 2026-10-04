@@ -31,7 +31,7 @@ fidelity, or success from this run. See references/verification.md, "Verdict sta
 
 Usage:
     python3 layout_assert.py --ir ir/screen.ui.json --actual render/nodes.json \\
-            --out audit/layout.json [--tolerance 1.0] [--strict] [--min-coverage 0.0]
+            --out audit/layout.json [--tolerance 1.0] [--strict] [--min-coverage 0.5]
 """
 
 from __future__ import annotations
@@ -133,7 +133,7 @@ def main() -> int:
     ap.add_argument("--out", required=True, type=Path)
     ap.add_argument("--tolerance", type=float, default=1.0, help="dp; use 0.5 for a pixel-perfect run (default 1.0)")
     ap.add_argument("--strict", action="store_true", help="exit 1 on any finding")
-    ap.add_argument("--min-coverage", type=float, default=0.0,
+    ap.add_argument("--min-coverage", type=float, default=0.5,
                      help="fraction (0-1) of design-geometry nodes that must be tagged and compared "
                           "(default 0.0 — only a fully-untagged run, 0 compared, is UNMEASURED; raise "
                           "this to also flag a mostly-untagged run, e.g. 0.5)")

@@ -34,8 +34,10 @@ differ` is a number that sends the repair loop into an infinite guess. Pixel dif
 have been a token, whether a new composable duplicates an existing one, whether the palette
 should migrate — those are judgement calls about a codebase, and they belong in code review
 (`/code-review`, `review-bitbucket-pr`) where a human is already looking. This skill's job
-is to make them *easy to see*: every raw value it emits carries a marker comment naming its
-Figma node, and `mapping-report.json` lists them all. It does not stop work over them.
+is to make them *easy to see*: `mapping-report.json` lists every raw value with the node it
+came from, and `Modifier.figmaNode(id)` ties each composable to its node in code a script can
+read. It does not stop work over them, and it does not leave that evidence in comments —
+generated Kotlin mentions neither Figma nor node ids anywhere (rule R7).
 
 An earlier version blocked generation until every value resolved to a project token. On the
 first real redesign it produced zero lines of Compose, because a new visual direction by
@@ -49,12 +51,14 @@ Read the reference when you reach its phase, not before.
 | Phase | Reference | Read when |
 |---|---|---|
 | 1 · Extract | `references/extraction.md` | Pulling a frame out of Figma |
+| 1b · Context | `references/extraction.md` | **Always** — converting the design context into texts/styles/assets |
 | 2 · IR | `references/ui-ir-schema.md` | Building or reading `screen.ui.json` |
 | 2b · Tokens | `references/adapter-spec.md` | **Optional** — the project has a design system |
 | 3 · Generate | `references/generation.md` | Writing Compose from IR |
 | 3b · Layout contract | `references/layout-contract.md` | **Before writing a screen** — the rules the gate enforces |
 | 4 · Verify | `references/verification.md` | Rendering and measuring |
 | 4b · Pixel fidelity | `references/pixel-fidelity.md` | **Before the first layout assertion**, and for any pixel-perfect run |
+| 4c · Self-test loop | `references/self-test-loop.md` | **Before the device run** — driving states, proving each one is real |
 | 5 · Repair | `references/repair-loop.md` | A measurement came back out of band |
 
 ## Phase 1 — Extract
@@ -68,16 +72,37 @@ get_variable_defs(fileKey, nodeId)  → design tokens, if the file has any
 get_screenshot(fileKey, nodeId)     → raw/design.png  (the measurement baseline)
 ```
 
-`get_variable_defs` returning `{}` is normal — most real files carry no variables. Derive
-`raw/texts.json` and `raw/styles.json` from the design context. Details:
-`references/extraction.md`.
+`get_variable_defs` returning `{}` is normal — most real files carry no variables.
+
+**Then convert the design context — this step is not optional:**
+
+```bash
+python3 scripts/context_to_ir.py --context raw/context.json \
+    --texts raw/texts.json --styles raw/styles.json --assets raw/assets.json
+```
+
+`get_metadata` is geometry only. Every string, every fill, every per-variant tint and every
+asset URL lives in `get_design_context`, and this is what carries them into the pipeline.
+Details: `references/extraction.md`.
 
 ## Phase 2 — IR
 
 ```bash
 python3 scripts/figma_to_ir.py --metadata raw/metadata.xml --texts raw/texts.json \
-                               --styles raw/styles.json --out ir/screen.ui.json
+                               --styles raw/styles.json --assets raw/assets.json \
+                               --out ir/screen.ui.json
+
+python3 scripts/ir_coverage_check.py --ir ir/screen.ui.json --texts raw/texts.json \
+                                     --styles raw/styles.json --assets raw/assets.json
 ```
+
+**The IR is a funnel, and the coverage check measures its throughput.** Everything the
+generator sees passes through here, so an IR that dropped the design produces a screen that
+every later gate certifies as clean, correct and measured — and empty. That is not a
+hypothetical: a run came through with 7 nodes, all fields null, `assets: []`, `unsupported:
+0`, and shipped eleven identical white cards where the design has eleven tints.
+`figma_to_ir.py` refuses to run without `--texts`/`--styles`; `ir_coverage_check.py` exits 1
+when coverage falls below its thresholds. Fix the extraction, never the threshold.
 
 **Check the tree before trusting it.** Every section of the design should appear as a
 container with a sensible `direction` and `gap`; platform chrome should be in
@@ -135,11 +160,13 @@ and the frame is 390dp, so "pixel-perfect" can only mean *at the design's width*
 Rules in full: `references/generation.md`. The short version:
 
 - **Reuse before you write** — anything with a `mapping.component` uses that composable.
-- **Token when one exists, raw with a marker when it doesn't:**
-  `Color(0xFF00DC82) // figma 17:34 — no matching token`. Never a bare unexplained literal.
+- **Token when one exists, the design's own value when it doesn't.** What stayed raw is in
+  `mapping-report.json`, not in a comment — see R7 below.
 - **Strings to resources.** Figma copy is the source of truth for the default locale.
 - **Platform chrome is not content.** Use `statusBarsPadding()` / `navigationBarsPadding()`;
   never reproduce a mock's fake status bar as views.
+- **No Figma in the code.** No node id, frame name or design-file reference in any comment
+  or KDoc. KDoc says what a composable does, for someone debugging the app. Gated by R7.
 - **Don't freeze the mock.** The frame is one width; the code runs on many. Keep `maxLines`,
   overflow, font-scale and width branching.
 
@@ -154,7 +181,8 @@ Five checks, in this order — each answers something the next cannot:
 | 2 | **Layout assertion** — `layout_assert.py` | seconds | *exactly* where each node landed, in dp — **exits 3 if nothing was measured** |
 | 3 | **Material check** — human, magnified | minutes | glow, font, thin accents |
 | 4 | Ink-band audits | seconds | **mandatory** when check 2 cannot run |
-| — | Device run (emulator) | minutes | real state, navigation, insets — **once, at the end** |
+| 5 | **State distinctness** — `state_distinct_check.py` | ~1s | **exits 1**: a capture that is not the state it claims to be |
+| — | Device run | minutes | real state, navigation, insets — **once per repair cycle** |
 
 **Two checks block, and they block for opposite reasons.** Check 0 blocks on a *wrong
 answer*; check 2 blocks on *no answer*. The token gate and the literal summary stay advisory
@@ -226,12 +254,15 @@ it.
 
 | Script | Does | Required |
 |---|---|---|
-| `scripts/figma_to_ir.py` | Figma metadata → `screen.ui.json` (incl. each node's design `rect`) | yes |
+| `scripts/context_to_ir.py` | `get_design_context` → texts, styles (incl. per-variant tints), assets | **yes** |
+| `scripts/figma_to_ir.py` | Figma metadata + those three → `screen.ui.json` | yes |
+| `scripts/ir_coverage_check.py` | Did the IR actually carry the design? **exits 1** | **yes** |
 | `scripts/layout_rules_check.py` | Layout contract gate — R1–R6, **exits 1** | **yes** |
 | `scripts/layout_assert.py` | Real node bounds vs design, per node, in dp — **exits 3 if nothing measured** | **yes**; `UNMEASURED` otherwise |
 | `assets/layout-audit/` | Kotlin templates that make `layout_assert.py` runnable on a bare project | with check 2 |
 | `scripts/scan_design_system.py` | Kotlin theme + composables → adapter, with a theme-source fingerprint | no |
 | `scripts/resolve_tokens.py` | Annotates IR with project tokens; **exits 3 on a stale adapter** | no |
+| `scripts/state_distinct_check.py` | Proves each captured state is really a different screen — **exits 1** | **yes**, with device captures |
 | `scripts/compose_quality_gate.py` | Literal, alpha and reuse summary on generated Kotlin | no |
 
 Measurement scripts are **not** duplicated here — `maestro-test-executor/scripts/`

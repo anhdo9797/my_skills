@@ -244,6 +244,39 @@ poured into a box of a different shape with no instruction, where it silently st
 Which `ContentScale` is a decision: `Crop` fills and trims the edges, `Fit` letterboxes.
 The design shows one framing of one asset and cannot tell you which it meant.
 
+## No Figma in comments or KDoc
+
+**R7.** Generated Kotlin names neither Figma, a node id, a frame name, nor the design file —
+in any `//`, `/* */` or KDoc.
+
+```kotlin
+/** The screen's own bottom navigation (figma 5:8501 "Nav Bar"). */   // ✗ R7
+/** Bottom navigation for the Connect screen. Taps are inert. */      // ✓
+
+.background(Color(0xFF00DC82))   // figma 17:34 — no matching token   // ✗ R7
+.background(Color(0xFF00DC82))                                        // ✓
+
+Modifier.figmaNode("5:8501")     // ✓ — code, not a comment; layout_assert.py reads it
+```
+
+An earlier version of this skill required the opposite and called the marker comment "the
+whole point". That was wrong. Traceability belongs somewhere a script checks, and it already
+has two such places:
+
+| Where | What it holds | Who reads it |
+|---|---|---|
+| `Modifier.figmaNode("5:8501")` | the node a composable came from | `layout_assert.py`, at runtime |
+| `ir/mapping-report.json` | every raw value, its node, why it stayed raw | review, the PR description |
+
+A comment is checked by nobody. It is therefore the one copy that silently rots when the
+design moves on, and the one copy every future reader of `features/connect/` has to scroll
+past while debugging an app they are not importing. KDoc is for what the composable does and
+what a caller must know.
+
+**What the rule matches**, deliberately narrowly: the word `figma`; `node-5_8501`; and a node
+id whose second component is three or more digits (`5:8501`, `I5:7853;19:1891`). An aspect
+ratio (`16:9`), a clock (`10:30`) or a version (`2:1`) in ordinary prose does not trip it.
+
 ## Decisions: ask the risky ones, default the rest
 
 Several of these choices are **undecidable from the design**. The rule for handling them
@@ -297,6 +330,7 @@ python3 scripts/layout_rules_check.py --files <generated .kt files>
 | **R4** | an `Image` filling a non-square box with no `aspectRatio` or `ContentScale` |
 | **R5** | a `Text` with no `color =` and no colour provable from an inline `TextStyle(color = …)` |
 | **R6** | a self-painted `Row` (`.clip(` + `.background(`, no own `fillMaxWidth`/`fillMaxSize`/`width`) that hands `weight()` to a `Text` child |
+| **R7** | a comment or KDoc naming Figma, a node id, a frame name, or the design file |
 
 `--warn-only` exists for migrating an existing screen that predates the contract. It is not
 for new code.

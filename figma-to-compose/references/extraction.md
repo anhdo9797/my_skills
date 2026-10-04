@@ -16,6 +16,83 @@ Extract `fileKey` and `nodeId` from the URL:
 `figma.com/design/<fileKey>/<name>?node-id=17-12` → `fileKey=<fileKey>`, `nodeId=17:12`
 (the dash becomes a colon).
 
+## The fifth step, and the one that gets skipped
+
+`get_metadata` carries geometry and nothing else — no string, no fill, no asset. All of
+that is in `get_design_context`, and `figma_to_ir.py` cannot read that format. One command
+converts it:
+
+```bash
+python3 scripts/context_to_ir.py --context raw/context.json \
+    --texts raw/texts.json --styles raw/styles.json --assets raw/assets.json
+```
+
+**This is not optional and it is not a formality.** Earlier versions of this document said
+only "derive `texts.json` and `styles.json` from the design context" and left it to the
+agent. On the first run whose brief did not repeat that instruction by hand, nobody did it,
+`figma_to_ir.py` accepted the missing flags without complaint, and the IR came out as seven
+boxes with every field null and `unsupported: 0`. The screen that came out of it lost all
+eleven topic-card tints and every Figma asset — the nav bar shipped as five identical
+Material house glyphs — while every later gate reported the code clean, correct and
+measured.
+
+A skill that routes the rich source *around* its own generator is worse than no skill at
+all, because an agent with no skill reads `get_design_context` directly and at least sees
+the colours. `figma_to_ir.py` now refuses to run without `--texts` and `--styles`, and
+`ir_coverage_check.py` blocks between Phase 2 and Phase 3 if the IR carried less of the
+design than the thresholds allow. Neither is a style preference.
+
+### What `context_to_ir.py` recovers that hand-derivation misses
+
+**Per-variant colour.** A component set comes back as parallel ternary chains keyed on the
+same condition names:
+
+```jsx
+id={isSpicy ? "node-5_7804" : isRelationship ? "node-5_7764" : "node-5_7744"}
+className={`… ${isSpicy ? "bg-[#ffe9ea]" : isRelationship ? "bg-[#ecfdf5]" : "bg-[#fbeff5]"}`}
+```
+
+Joining the two chains on the condition is what turns eleven identical cards back into
+eleven differently-tinted ones. Reading it by eye, an agent records the default arm and
+drops the rest.
+
+**Asset ownership.** An `<img>` has no node id of its own; it belongs to the element
+wrapping it. Without that attribution nothing can later check that the `Image(` in the
+generated Kotlin points at a downloaded Figma export rather than a stock glyph.
+
+**CSS-variable fills.** `bg-[var(--pink\/pink-500,#fd75a7)]` carries the hex in the
+fallback slot, with the `/` escaped. The hex is the value that matters.
+
+## Assets: Figma exports SVG, Android wants vector drawable
+
+This step has no default tool and it has now cost two runs. One shipped a bespoke five-icon
+nav bar as five identical Material house glyphs; another stalled for two and a half hours
+probing for a converter that was not installed. Neither failure was visible in any gate.
+
+**Check what exists before planning around it.** On a bare macOS box, usually none of these:
+
+```bash
+for c in rsvg-convert magick convert inkscape; do command -v $c || echo "$c MISSING"; done
+command -v npx   # usually present
+```
+
+Two routes, in order of preference:
+
+1. **`npx -y svg2vectordrawable -i in.svg -o out.xml`** — produces real Android vector
+   drawable XML, which is the correct target: it scales at every density and is what the
+   platform wants. Needs network for the first package fetch.
+2. **Ask Figma for a PNG instead.** `get_screenshot` on the icon node returns a raster. No
+   tooling, no network beyond Figma. The icon stops being scalable, which is a real cost on
+   a multi-density app — record it in `decisions.md` rather than letting it pass unnoticed.
+
+**Never substitute a stock glyph.** `Icons.Default.Home` in place of the design's own icon
+is the single most damaging silent failure in this pipeline, because the screen still looks
+plausible. If no route produces the real asset, **leave the slot empty** and say so in the
+report: a reviewer notices a hole immediately and never notices a wrong-but-reasonable icon.
+
+A frame of any size carries more of these than it looks. One real screen needed **93 SVG and
+66 PNG**. Budget for it, and convert in one batch rather than per icon.
+
 ## What each call is for
 
 **`get_metadata` is the geometry source.** It returns every node's id, name, type, x, y,

@@ -20,18 +20,20 @@ either here or behind a path named here.
 
 ## Ground rules
 
-1. **Build the screen.** Unmapped tokens do not stop you — emit the design's own value with
-   a marker comment naming the Figma node (`// figma 17:34 — no matching token`) and keep
-   going. The deliverable is a working screen plus an honest account of what is raw in it.
-2. **Never an unexplained literal, and never an invented token.** A bare `Color(0xFF00DC82)`
-   hides the finding; the same literal with its node id hands review the question. Do not
-   name a token that does not exist in the project.
+1. **Build the screen.** Unmapped tokens do not stop you — emit the design's own value and
+   keep going. The deliverable is a working screen plus an honest account of what is raw in
+   it, and that account lives in `mapping-report.json`, never in a comment.
+2. **Never an invented token, and never Figma in the code.** Do not name a token that does
+   not exist in the project, and do not put a node id, frame name or design-file reference
+   in any comment or KDoc — rule R7 blocks it. Traceability is `Modifier.figmaNode(id)` plus
+   `mapping-report.json`, both machine-readable.
 3. **Do not edit the theme.** Not `Color.kt`, not the theme composable. If whole families of
    colours are unmatched, say so in the report — migrating the palette is a decision for the
    people who own the codebase, made with the working screen in front of them.
 4. **Scope is the screen file.** No ViewModel, repository, navigation, DI, or dependency
    changes. If the design needs data the current UI state does not carry, add the field to
-   the state class, leave a `TODO` with the Figma node id, and say so in the report.
+   the state class, leave a plain `TODO` naming the missing data, and say which design node
+   needs it **in the report** — not in the code (R7).
 5. **Report what happened, including what failed.** A half-converged repair loop and a
    screen that is 80% off-palette are normal outcomes. A report that hides them is worse
    than no report.
@@ -99,7 +101,7 @@ goes in the report and in the PR description, not in a stop decision.
 Read `{{SKILL_ROOT}}/references/layout-contract.md` **before writing the screen** — those
 four rules are gated and will stop you at step 5 otherwise. Then follow
 `{{SKILL_ROOT}}/references/generation.md`: reuse before writing; token where the IR resolved
-one and a marked raw value where it did not; strings to `res/values/strings.xml`; existing
+one and the design's own value where it did not; strings to `res/values/strings.xml`; existing
 adaptive behaviour preserved.
 
 **Handle the undecidable choices as you go.** The design drew one string of one length, so it
@@ -138,7 +140,7 @@ python3 {{SKILL_ROOT}}/scripts/compose_quality_gate.py \
 
 An invented `.copy(alpha = 0.2f)` is a colour decision with no Figma node behind it, and it
 is how a solid brand-pink button ships as a pale smear. Treat it like any other raw value:
-justify it with a marker comment or remove it.
+remove it, or make it a named val the project's conventions justify.
 
 **Then measure, and measuring is not optional.** Copy the templates from
 `{{SKILL_ROOT}}/assets/layout-audit/` into the project per that directory's README, tag each

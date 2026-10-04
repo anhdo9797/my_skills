@@ -308,8 +308,42 @@ def check_file(path: Path) -> list[dict]:
                 "how you spell that",
             )
 
+    # ---- R7 · Figma leaking into comments and KDoc ----------------------------------
+    #
+    # Scanned on `raw`, not on `text`: `blank_comments` is what erases the very region this
+    # rule owns. Matching only inside comment spans is also what keeps
+    # `Modifier.figmaNode("5:8501")` — real code, read by layout_assert.py — out of scope.
+    for cm in COMMENT_SPAN.finditer(raw):
+        body = cm.group(0)
+        hit = FIGMA_IN_COMMENT.search(body)
+        if not hit:
+            continue
+        add(
+            "R7",
+            cm.start(),
+            f"comment mentions the design source: {hit.group(0)!r}",
+            "delete the reference. Generated Kotlin names neither Figma, a node id, a frame "
+            "name nor the design file, in any comment or KDoc. Traceability already lives in "
+            "two places a script can read: Modifier.figmaNode(id) in the code itself, and "
+            "ir/mapping-report.json for every value that stayed raw. A comment is checked by "
+            "nobody, so it is the one copy that rots when the design moves on, and it is the "
+            "copy every future reader has to scroll past. KDoc says what the composable does, "
+            "for someone debugging the app — not what it was imported from",
+        )
+
     return findings
 
+
+COMMENT_SPAN = re.compile(r"/\*.*?\*/|//[^\n]*", re.S)
+
+# A node id as this pipeline writes them: 5:8501, 5_8501, I5:7853;19:1891. The second
+# component is required to be 3+ digits so an aspect ratio (16:9) or a clock (10:30) in
+# ordinary prose does not trip the rule.
+FIGMA_IN_COMMENT = re.compile(
+    r"(?i)\bfigma\b"
+    r"|\bnode-\d+[_:]\d+"
+    r"|\bI?\d+[:_]\d{3,}(?:;\d+[:_]\d+)?\b"
+)
 
 RULE_TITLES = {
     "R1": "fixed dimension around text",
@@ -318,6 +352,7 @@ RULE_TITLES = {
     "R4": "image that loses the design's ratio",
     "R5": "text with no declared colour",
     "R6": "weight() on a label inside a self-painted row",
+    "R7": "Figma reference left in a comment or KDoc",
 }
 
 

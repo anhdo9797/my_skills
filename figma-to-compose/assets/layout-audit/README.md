@@ -174,6 +174,10 @@ it is two sources of truth for one measurement and only invites a mismatch nobod
 
 ## What's unverified
 
+The dump template now uses the target app's private files directory rather than
+`/sdcard/Download`; pull it with `adb exec-out run-as <applicationId> cat files/<output> > render/nodes.json`.
+Android 10+ scoped storage can reject the previous shared-storage write.
+
 Everything in this directory is written against stable, long-documented Compose UI test APIs,
 reasoned through carefully, and matched against the exact JSON shape `layout_assert.py --help`
 prints (confirmed by running it; see `references/verification.md`'s fixture run). None of it

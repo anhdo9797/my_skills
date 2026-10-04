@@ -56,6 +56,8 @@ def infer_role(tag: str, name: str, w: float, h: float, has_children: bool) -> s
     lower = name.lower()
     if tag == "text":
         return "text"
+    if tag == "instance":
+        return "component"
     if DIVIDERISH.search(lower) or (min(w, h) <= 2 < max(w, h)):
         return "divider"
     if "rect" in tag or tag in ("ellipse", "polygon", "star", "line"):
@@ -308,7 +310,12 @@ class Extractor:
             layout.update(extra)
         node["layout"] = layout
 
-        style = self.styles.get(node_id, {})
+        # Figma prefixes nodes expanded from an instance with one or more instance ids,
+        # for example `I5:8490;5:7748`. get_design_context keeps the component-source id
+        # (`5:7748`). Fall back to that final source segment so expanded instances retain
+        # their text, per-variant fill and typography instead of becoming empty boxes.
+        source_id = node_id.rsplit(";", 1)[-1]
+        style = self.styles.get(node_id, self.styles.get(source_id, {}))
         if style:
             node["style"] = {
                 key: {"raw": value, "token": None}
@@ -317,7 +324,7 @@ class Extractor:
             }
 
         if role == "text":
-            content = self.texts.get(node_id)
+            content = self.texts.get(node_id, self.texts.get(source_id))
             if content is None:
                 self.missing_text.append(node_id)
             node["text"] = {
@@ -360,10 +367,35 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--metadata", required=True, type=Path, help="get_metadata XML output")
     ap.add_argument("--out", required=True, type=Path)
-    ap.add_argument("--texts", type=Path, help='{"17:35": "NÉN VIDEO NGAY"} from get_design_context')
-    ap.add_argument("--styles", type=Path, help='{"17:28": {"fill": "#0F1511", "radius": 22}} from get_design_context')
+    ap.add_argument("--texts", type=Path, help='{"17:35": "NÉN VIDEO NGAY"} — build it with context_to_ir.py')
+    ap.add_argument("--styles", type=Path, help='{"17:28": {"fill": "#0F1511", "radius": 22}} — build it with context_to_ir.py')
+    ap.add_argument("--assets", type=Path, help="assets.json from context_to_ir.py — binds each asset node to its Figma export URL")
     ap.add_argument("--file-key", default="", help="recorded in source metadata")
+    ap.add_argument(
+        "--geometry-only",
+        action="store_true",
+        help="deliberately build a geometry-only IR with no text, fills or assets. "
+             "Almost never what you want — see the refusal message.",
+    )
     args = ap.parse_args()
+
+    # An IR with no content is the worst output this script can produce, because it looks
+    # like success. On a real run the flags were simply omitted, the IR came out as seven
+    # empty boxes with `unsupported: 0`, and the generated screen lost every colour and
+    # every asset in the design. Nothing downstream noticed. Refuse instead.
+    if not args.geometry_only and not (args.texts and args.styles):
+        missing = " and ".join(
+            n for n, v in (("--texts", args.texts), ("--styles", args.styles)) if not v
+        )
+        print(
+            f"error: {missing} not supplied — the IR would carry geometry and nothing else.\n"
+            "       Build them from the design context first:\n"
+            "         python3 context_to_ir.py --context raw/context.tsx \\\n"
+            "             --texts raw/texts.json --styles raw/styles.json --assets raw/assets.json\n"
+            "       Pass --geometry-only if a box-only IR is genuinely what you want.",
+            file=sys.stderr,
+        )
+        return 2
 
     raw = args.metadata.read_text(encoding="utf-8")
     start = raw.find("<")
@@ -388,6 +420,13 @@ def main() -> int:
 
     texts = json.loads(args.texts.read_text(encoding="utf-8")) if args.texts else {}
     styles = json.loads(args.styles.read_text(encoding="utf-8")) if args.styles else {}
+    raw_assets: list[dict] = []
+    asset_urls: dict[str, dict] = {}
+    if args.assets and args.assets.exists():
+        raw_assets = json.loads(args.assets.read_text(encoding="utf-8"))
+        for entry in raw_assets:
+            if entry.get("id"):
+                asset_urls.setdefault(entry["id"], entry)
 
     extractor = Extractor(texts, styles)
     root = extractor.build(root_el)
@@ -408,7 +447,21 @@ def main() -> int:
         # is an artefact, and every rect has to be frame-relative to be comparable with
         # what Compose reports for the screen's content root.
         "root": strip_internals(root, (-root["_x"], -root["_y"])),
-        "assets": extractor.assets,
+        "assets": [
+            {**a,
+             "export": (asset_urls.get(a["id"], asset_urls.get(a["id"].rsplit(";", 1)[-1], {})) or {}).get("url"),
+             "ext": (asset_urls.get(a["id"], asset_urls.get(a["id"].rsplit(";", 1)[-1], {})) or {}).get("ext")}
+            for a in extractor.assets
+        ],
+        # get_metadata deliberately collapses component instances unless every instance is
+        # queried separately. Preserve the complete context payload in the IR as a lossless
+        # fallback so a plan limit or a shallow metadata response cannot erase component
+        # variants before generation. Tree nodes still take precedence when present.
+        "sourceContext": {
+            "texts": texts,
+            "styles": styles,
+            "assets": raw_assets,
+        },
         "unsupported": extractor.unsupported,
         "mapping": {"resolvedCount": 0, "unmapped": [], "resolved": False},
     }

@@ -16,6 +16,7 @@ import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import java.io.File
+import androidx.test.platform.app.InstrumentationRegistry
 
 /**
  * Renders TODO(SCREEN_NAME) at the Figma frame's dp width and dumps every `figmaNode`-tagged
@@ -24,7 +25,7 @@ import java.io.File
  * Run it, then pull the dump:
  *
  *     ./gradlew :app:connectedDebugAndroidTest --tests '*LayoutAuditDumpTest'
- *     adb pull /sdcard/Download/TODO(OUTPUT_FILE) render/nodes.json
+ *     adb exec-out run-as <applicationId> cat files/TODO_OUTPUT_FILE > render/nodes.json
  *     python3 scripts/layout_assert.py --ir ir/screen.ui.json --actual render/nodes.json \
  *             --out audit/layout.json --tolerance 1.0
  *
@@ -83,8 +84,10 @@ class LayoutAuditDumpTest { // TODO: rename to match the screen, e.g. ConnectLay
                 "right screen/fixture is being rendered above."
         }
 
-        File("/sdcard/Download/TODO_OUTPUT_FILE").writeText(JSONObject(rects).toString())
-        // TODO: e.g. "nodes-connect.json" — give each screen its own file so parallel audits
-        // on different screens don't overwrite one another on the device.
+        File(
+            InstrumentationRegistry.getInstrumentation().targetContext.filesDir,
+            "TODO_OUTPUT_FILE",
+        ).writeText(JSONObject(rects).toString())
+        // Android 10+ scoped storage can reject test writes to /sdcard/Download.
     }
 }
