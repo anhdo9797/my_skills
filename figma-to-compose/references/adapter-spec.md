@@ -5,7 +5,7 @@ project-specific thing in this pipeline, and the pipeline runs fine without it.
 
 **Skip it when:** the project has no design system, the design is a visual direction the
 codebase has not adopted, or you just want the screen built. Generation emits idiomatic
-Compose with raw values, each marked with its Figma node id for review.
+Compose with raw values; each one is listed with its Figma node in `ir/mapping-report.json` for review.
 
 **Add it when:** the project has components and tokens worth reusing, and you would rather
 the generated screen call `ComposerCard` and `spacing.md` than rebuild both. It is worth the
@@ -259,8 +259,7 @@ pixel fidelity reachable at all, because the tokens then *are* the design's numb
 If `resolve_tokens.py` reports that most colors in the frame match no palette entry, the
 design is a **different theme**, not a different screen.
 
-This does not stop generation. The screen is built with the design's own values, each
-marked with its node id, and the mapping report says plainly that the palette did not
+This does not stop generation. The screen is built with the design's own values, and the mapping report says plainly that the palette did not
 match. **Put that in the PR description** — a reviewer seeing "38 of 41 colours are new;
 this frame is a dark redesign" reads the diff completely differently than one who does not.
 

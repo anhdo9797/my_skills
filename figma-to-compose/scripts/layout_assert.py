@@ -135,8 +135,7 @@ def main() -> int:
     ap.add_argument("--strict", action="store_true", help="exit 1 on any finding")
     ap.add_argument("--min-coverage", type=float, default=0.5,
                      help="fraction (0-1) of design-geometry nodes that must be tagged and compared "
-                          "(default 0.0 — only a fully-untagged run, 0 compared, is UNMEASURED; raise "
-                          "this to also flag a mostly-untagged run, e.g. 0.5)")
+                          "(default 0.5; a run with 0 nodes compared is UNMEASURED at any setting)")
     args = ap.parse_args()
 
     try:

@@ -1,0 +1,24 @@
+Currently selected nodes:
+- 5:8469: Connect
+
+<frame id="5:8469" name="Connect" x="440" y="9" width="390" height="600">
+  <frame id="5:8470" name="row" x="20" y="24" width="350" height="24">
+    <frame id="5:8471" name="icon" x="0" y="0" width="24" height="24">
+      <vector id="5:8479" name="Vector" x="2" y="2" width="20" height="20" />
+    </frame>
+    <text id="5:8472" name="title" x="36" y="0" width="286" height="24" />
+    <frame id="5:8473" name="chevron" x="334" y="4" width="16" height="16" />
+  </frame>
+  <frame id="5:8480" name="info" x="20" y="64" width="350" height="50">
+    <text id="5:8481" name="size" x="0" y="0" width="120" height="14" />
+    <text id="5:8482" name="lines" x="0" y="14" width="90" height="36" />
+  </frame>
+  <frame id="5:8474" name="cta" x="20" y="130" width="140" height="48">
+    <text id="5:8475" name="label" x="24" y="14" width="92" height="20" />
+  </frame>
+  <frame id="5:8476" name="divider" x="20" y="194" width="350" height="1" />
+  <frame id="5:8477" name="accent" x="20" y="211" width="3" height="40" />
+  <frame id="5:8478" name="thumb" x="20" y="267" width="350" height="350" />
+  <instance id="5:8490" name="Topic card" x="20" y="633" width="350" height="44" />
+  <instance id="5:8491" name="Topic card" x="20" y="693" width="350" height="44" />
+</frame>

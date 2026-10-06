@@ -18,14 +18,18 @@ Extract `fileKey` and `nodeId` from the URL:
 
 ## The fifth step, and the one that gets skipped
 
-`get_metadata` carries geometry and nothing else — no string, no fill, no asset. All of
-that is in `get_design_context`, and `figma_to_ir.py` cannot read that format. One command
-converts it:
+`get_metadata` carries geometry and nothing else — no string, no fill, no asset, no
+auto-layout. All of that is in `get_design_context`, and `figma_to_ir.py` cannot read that
+format. One command converts it:
 
 ```bash
-python3 scripts/context_to_ir.py --context raw/context.json \
+python3 scripts/context_to_ir.py --context raw/context.json --tree raw/context-tree.json \
     --texts raw/texts.json --styles raw/styles.json --assets raw/assets.json
 ```
+
+Save the MCP response **verbatim** to `raw/context.json` — the JSON envelope
+(`{"content": ["<code>", …]}`) is fine, so is the bare code in a `.tsx`. Do not hand-edit or
+excerpt it; the parser needs the whole file to resolve helper components.
 
 **This is not optional and it is not a formality.** Earlier versions of this document said
 only "derive `texts.json` and `styles.json` from the design context" and left it to the
@@ -44,8 +48,48 @@ design than the thresholds allow. Neither is a style preference.
 
 ### What `context_to_ir.py` recovers that hand-derivation misses
 
-**Per-variant colour.** A component set comes back as parallel ternary chains keyed on the
-same condition names:
+**The layout itself.** Figma's code *is* its auto-layout: `flex flex-col` is the direction,
+`gap-[16px]` the item spacing, `px-[20px] py-[24px]` the padding, `items-center` /
+`justify-between` the alignment, `w-full` / `flex-[1_0_0]` / `shrink-0` + `size-[24px]` the
+fill / weight / fixed sizing, `absolute left-[12px] top-[5px]` an absolutely positioned
+child. Earlier versions threw all of it away and re-derived layout from x/y — and got a
+54dp button's direction wrong, a `justify-between` row's gap as "24.75", and every inset card
+as a fixed `width(350.dp)`. The tree carries it as stated; `figma_to_ir.py --tree` uses it.
+
+**Text that lives below its node.** Figma often puts the node id and font on a wrapper and
+the string in an id-less child:
+
+```jsx
+<p className="font-['Roboto_Mono:Regular'] leading-[0] text-[11px] text-white" data-node-id="52:176">
+  <span className="leading-[normal]">00:06.200</span>
+  <span className="leading-[normal] text-[#8e9aa8]">{` / 00:17.000`}</span>
+</p>
+```
+
+The old flat parser skipped any element whose body contained `<`, so this string never
+reached the IR. The tree reads it as one text node with two `runs` (the second overriding the
+colour), and inherits family/size/colour from ancestors the way CSS does.
+
+**The full text style.** `font-['Inter:Semi_Bold']` → family `Inter`, weight 600;
+`leading-[24px]` / `leading-[1.5]` / `leading-[normal]` → line height 24, 1.5×size, or
+`auto`; `tracking-[-0.02em]` → letter spacing; `uppercase`, `text-center`,
+`whitespace-nowrap`, `line-clamp-2`. None of these were carried before, and every one of them
+changes how big a text box is.
+
+**Effects and paint.** `bg-[rgba(0,0,0,0.8)]` keeps its alpha; `bg-white`, `text-white`
+are colours too; gradients come from `bg-gradient-to-b from-[…] to-[…]` *and* from
+`style={{ backgroundImage: "linear-gradient(91.5deg, …)" }}`; `shadow-[…]` and
+`drop-shadow-[…]` become shadow lists with colour and alpha; `opacity-80`, per-corner
+`rounded-tl-[16px]`, `border-[1.5px]`, `border-t`.
+
+**Component instances.** A helper `function TopicCard({ variant = "Calm" })` used as
+`<TopicCard variant="Spicy" data-node-id="5:8490" />` is expanded with that instance's props,
+so its `isSpicy ? … : …` ternaries resolve to the instance's own arm — fill, text and child
+ids. Conditions that cannot be resolved take the default arm, are listed in the tree's
+`unresolvedConditions`, and the node keeps every arm under `variants`.
+
+**Per-variant colour, when the component is not instantiated.** A component set selected on
+its own comes back as parallel ternary chains keyed on the same condition names:
 
 ```jsx
 id={isSpicy ? "node-5_7804" : isRelationship ? "node-5_7764" : "node-5_7744"}

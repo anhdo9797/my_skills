@@ -63,24 +63,32 @@ get_design_context(fileKey, nodeId) → raw/context.json
 get_screenshot(fileKey, nodeId, maxDimension = 2 × frame width) → raw/design.png (curl the URL)
 ```
 
-Then derive two files the extractor needs, from `context.json`:
+Save every response verbatim. Then convert the design context — never derive these files by
+hand:
 
-- `raw/texts.json` — `{"<nodeId>": "<exact string>"}` for every text node. Copy the
-  characters exactly, diacritics included. A string you cannot read is `null`, never a guess.
-- `raw/styles.json` — `{"<nodeId>": {"fill": "#RRGGBB", "radius": 22, "size": 16,
-  "weight": 600, "color": "#RRGGBB", "border": "#RRGGBB"}}` for every node that has them.
+```bash
+python3 {{SKILL_ROOT}}/scripts/context_to_ir.py --context raw/context.json \
+    --tree raw/context-tree.json --texts raw/texts.json --styles raw/styles.json \
+    --assets raw/assets.json
+```
+
+Read its last lines: the font families the design uses (bundle them, or say in the report
+that you could not) and any class it could not parse.
 
 ### 3 · IR
 
 ```bash
 python3 {{SKILL_ROOT}}/scripts/figma_to_ir.py \
-    --metadata raw/metadata.xml --texts raw/texts.json --styles raw/styles.json \
+    --metadata raw/metadata.xml --tree raw/context-tree.json \
+    --texts raw/texts.json --styles raw/styles.json --assets raw/assets.json \
     --file-key {{FILE_KEY}} --out ir/screen.ui.json
+
+python3 {{SKILL_ROOT}}/scripts/ir_coverage_check.py --ir ir/screen.ui.json \
+    --texts raw/texts.json --styles raw/styles.json --assets raw/assets.json
 ```
 
-**Check the IR by hand before trusting it** — this is the step that decides whether the
-generated screen is right, because layout is derived from geometry rather than read from
-Figma. Every section of the design should appear as a container with a sensible `direction`
+**Check the IR by hand before trusting it.** Containers marked `layoutSource: "auto-layout"`
+were read from the design; `"geometry"` ones were inferred from x/y and are guesses. Every section of the design should appear as a container with a sensible `direction`
 and `gap`, platform chrome should be in `platformChrome[]`, and `unsupported[]` should be
 short. A tree that does not look like the screen means the extractor guessed wrong — fix it
 now, not after generating from it.
@@ -99,10 +107,12 @@ goes in the report and in the PR description, not in a stop decision.
 ### 4 · Generate
 
 Read `{{SKILL_ROOT}}/references/layout-contract.md` **before writing the screen** — those
-four rules are gated and will stop you at step 5 otherwise. Then follow
+rules are gated and will stop you at step 5 otherwise. Then follow
 `{{SKILL_ROOT}}/references/generation.md`: reuse before writing; token where the IR resolved
 one and the design's own value where it did not; strings to `res/values/strings.xml`; existing
-adaptive behaviour preserved.
+adaptive behaviour preserved. Generate section by section with the matching crop of
+`raw/design.png` in view, and apply its *Text: metrics are layout* rules to every text style —
+`lineHeight` + `LineHeightStyle(Center, Trim.None)`, `letterSpacing`, font family, `textCase`.
 
 **Handle the undecidable choices as you go.** The design drew one string of one length, so it
 cannot say how many lines a long one gets, whether it ellipsises or wraps, who shrinks in a

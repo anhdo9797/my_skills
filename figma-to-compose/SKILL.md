@@ -66,8 +66,8 @@ Read the reference when you reach its phase, not before.
 Figma MCP only. Never screen-scrape, never guess geometry.
 
 ```
-get_metadata(fileKey, nodeId)       → structure, names, x/y/w/h      → raw/metadata.xml
-get_design_context(fileKey, nodeId) → fills, typography, text        → raw/context.json
+get_metadata(fileKey, nodeId)       → ids, names, x/y/w/h            → raw/metadata.xml
+get_design_context(fileKey, nodeId) → auto-layout, style, text, assets → raw/context.json (verbatim)
 get_variable_defs(fileKey, nodeId)  → design tokens, if the file has any
 get_screenshot(fileKey, nodeId)     → raw/design.png  (the measurement baseline)
 ```
@@ -77,20 +77,23 @@ get_screenshot(fileKey, nodeId)     → raw/design.png  (the measurement baselin
 **Then convert the design context — this step is not optional:**
 
 ```bash
-python3 scripts/context_to_ir.py --context raw/context.json \
+python3 scripts/context_to_ir.py --context raw/context.json --tree raw/context-tree.json \
     --texts raw/texts.json --styles raw/styles.json --assets raw/assets.json
 ```
 
-`get_metadata` is geometry only. Every string, every fill, every per-variant tint and every
-asset URL lives in `get_design_context`, and this is what carries them into the pipeline.
-Details: `references/extraction.md`.
+`get_metadata` is geometry only. `get_design_context` is the design's **intent**: its
+`flex flex-col gap-[16px] px-[20px] items-center` classes are the auto-layout written down
+exactly, and every fill, gradient, shadow, font family, line height, letter spacing and asset
+URL is in it. `context_to_ir.py` parses it into a node tree — nesting, inherited text style,
+mixed-style `<span>` runs and component-instance variants intact. Read its last lines: the
+font families to bundle, and any class it could not parse. Details: `references/extraction.md`.
 
 ## Phase 2 — IR
 
 ```bash
-python3 scripts/figma_to_ir.py --metadata raw/metadata.xml --texts raw/texts.json \
-                               --styles raw/styles.json --assets raw/assets.json \
-                               --out ir/screen.ui.json
+python3 scripts/figma_to_ir.py --metadata raw/metadata.xml --tree raw/context-tree.json \
+                               --texts raw/texts.json --styles raw/styles.json \
+                               --assets raw/assets.json --out ir/screen.ui.json
 
 python3 scripts/ir_coverage_check.py --ir ir/screen.ui.json --texts raw/texts.json \
                                      --styles raw/styles.json --assets raw/assets.json
@@ -106,8 +109,11 @@ when coverage falls below its thresholds. Fix the extraction, never the threshol
 
 **Check the tree before trusting it.** Every section of the design should appear as a
 container with a sensible `direction` and `gap`; platform chrome should be in
-`platformChrome[]`; `unsupported[]` should be short. Layout is *derived from geometry*, so a
-tree that does not look like the screen means the extractor guessed wrong — fix that before
+`platformChrome[]`; `unsupported[]` should be short. Each container says where its layout
+came from: `layoutSource: "auto-layout"` is read from the design and exact;
+`layoutSource: "geometry"` was derived from x/y on a hand-positioned frame and is a guess. A
+mostly-`geometry` IR for a design you know uses auto-layout means `--tree` was missing or came
+from a different node. A tree that does not look like the screen means the extractor guessed wrong — fix that before
 generating, not after.
 
 ### Phase 2b — Tokens (optional)
@@ -169,6 +175,14 @@ Rules in full: `references/generation.md`. The short version:
   or KDoc. KDoc says what a composable does, for someone debugging the app. Gated by R7.
 - **Don't freeze the mock.** The frame is one width; the code runs on many. Keep `maxLines`,
   overflow, font-scale and width branching.
+- **Text metrics are layout.** Every `Text` whose IR style has a numeric `lineHeight` gets
+  that `lineHeight` plus `LineHeightStyle(Alignment.Center, Trim.None)` — Figma centres the
+  leading on each line, and Compose's default trims it, so every text box comes out short and
+  the error accumulates down the screen. Carry `letterSpacing`, `textCase` and the font
+  family; `runs` become an `AnnotatedString`. Table in `references/generation.md`.
+- **Effects are in the IR now — emit them.** `gradient`, `shadows`, `dropShadows`, `opacity`,
+  `corners`, border `sides`. A design that glows and a screen that does not is the most
+  visible failure this pipeline has had.
 
 ## Phase 4 — Verify
 
@@ -254,8 +268,8 @@ it.
 
 | Script | Does | Required |
 |---|---|---|
-| `scripts/context_to_ir.py` | `get_design_context` → texts, styles (incl. per-variant tints), assets | **yes** |
-| `scripts/figma_to_ir.py` | Figma metadata + those three → `screen.ui.json` | yes |
+| `scripts/context_to_ir.py` | `get_design_context` → node tree (auto-layout, full style, text runs, instance variants) + flat texts/styles/assets | **yes** |
+| `scripts/figma_to_ir.py` | metadata geometry + context tree → `screen.ui.json` (IR v2) | yes |
 | `scripts/ir_coverage_check.py` | Did the IR actually carry the design? **exits 1** | **yes** |
 | `scripts/layout_rules_check.py` | Layout contract gate — R1–R6, **exits 1** | **yes** |
 | `scripts/layout_assert.py` | Real node bounds vs design, per node, in dp — **exits 3 if nothing measured** | **yes**; `UNMEASURED` otherwise |
@@ -264,6 +278,7 @@ it.
 | `scripts/resolve_tokens.py` | Annotates IR with project tokens; **exits 3 on a stale adapter** | no |
 | `scripts/state_distinct_check.py` | Proves each captured state is really a different screen — **exits 1** | **yes**, with device captures |
 | `scripts/compose_quality_gate.py` | Literal, alpha and reuse summary on generated Kotlin | no |
+| `tests/` | `python3 -m unittest discover -s tests` — extraction regressions | when editing scripts |
 
 Measurement scripts are **not** duplicated here — `maestro-test-executor/scripts/`
 (`spacing_audit.py`, `typography_audit.py`, `text_audit.py`, `pair_view.py`,

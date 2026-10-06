@@ -1,6 +1,7 @@
 # Phase 3 — Generating Compose
 
-Input: a token-resolved `screen.ui.json` with an empty (or human-cleared) `unmapped[]`.
+Input: `ir/screen.ui.json` (IR v2, token-resolved when the project has an adapter — unmapped
+values stay raw and do not block), plus `raw/design.png` to look at while writing.
 Output: Kotlin that a reviewer would have written.
 
 ## Order of preference for every node
@@ -21,13 +22,18 @@ an existing `ComposerCard` that does the same job is the most common thing a rev
 back — so before writing a new composable, check the adapter's component list for the shape
 you are about to build.
 
-## Before you generate: check where the content actually is
+## Before you generate: read the IR, then look at the design
 
-Run `ir_coverage_check.py` and read its `tree N + sourceContext M` lines. If the tree's
-share is small, the screen is built from component instances and the tree is a geometric
-skeleton — the per-instance colours, icons and labels are in `sourceContext`, flat and keyed
-by node id. Generating from the tree alone yields eleven identical cards where the design
-has eleven tinted ones. `references/ui-ir-schema.md` explains how to rebuild the grouping.
+Run `ir_coverage_check.py` and read its `tree N + sourceContext M` lines. With `--tree`
+nearly everything should be in the tree; a large `sourceContext` share means the IR was
+built without `--tree` and repeated instances will come out identical — rebuild it.
+
+Then **generate one section at a time with the design in view.** For each top-level section,
+crop `raw/design.png` to that node's `rect` (scaled by the export factor) and look at it
+while writing the section's composables. The IR says what the numbers are; the crop says what
+it is supposed to look like — a glow, a gradient direction, which text is uppercase. A whole
+screen generated from a 3,000-line JSON with no picture is how sections get swapped and
+effects get dropped.
 
 ## Comments and KDoc carry no Figma
 
@@ -165,33 +171,96 @@ is a bug that ships.
   design become one `toolCards` list and one `ToolTile`, the way the existing file already
   does it.
 - **No new ViewModel/repository/navigation code.** If the design needs data the current
-  state doesn't carry, add the field to the UI state and leave a `TODO` with the node id —
-  wiring it is a separate task with separate review.
+  state doesn't carry, add the field to the UI state and leave a plain `TODO` naming the
+  missing data (no node id — R7; the node goes in the report). Wiring it is a separate task
+  with separate review.
 
 ## Layout translation
 
+Check `layoutSource` first. `"auto-layout"` values are the design's own — translate them
+literally. `"geometry"` values were inferred from x/y on a hand-positioned frame; they are
+usually right but verify them against the crop before trusting a gap or a padding.
+
 | IR | Compose |
 |---|---|
-| `direction: column`, `gap` | `Column(verticalArrangement = Arrangement.spacedBy(token))` |
-| `direction: row`, `gap` | `Row(horizontalArrangement = Arrangement.spacedBy(token))` |
-| `direction: stack` | `Box` with `Modifier.align` per child |
+| `direction: column`, `gap` | `Column(verticalArrangement = Arrangement.spacedBy(gap))` |
+| `direction: row`, `gap` | `Row(horizontalArrangement = Arrangement.spacedBy(gap))` |
+| `align.main: spaceBetween` | `Arrangement.SpaceBetween` (no `spacedBy`) |
+| `align.cross: center` | `verticalAlignment = CenterVertically` (row) / `horizontalAlignment = CenterHorizontally` (column) |
+| `direction: grid`, `columns` | `LazyVerticalGrid(GridCells.Fixed(columns))` if it scrolls, else rows of `weight(1f)` cells |
+| `direction: stack` | `Box`, each child placed by `Modifier.align` / `offset` |
+| `spacing: [a, b, c]` | no `spacedBy`; `Spacer(Modifier.height(a.dp))` between those children |
+| `padding` | `Modifier.padding(top, end, bottom, start)` — inside `background`/`clip` |
 | `width: fill` | `Modifier.fillMaxWidth()` |
 | `width: wrap` | nothing (default) |
-| `width: <n>` | `Modifier.width(n.dp)` — **suspicious**; prefer `weight` or `fillMaxWidth` |
-| fixed-column grid | `FlowRow` with computed width, or `LazyVerticalGrid` if scrollable |
+| `width: <n>` | `Modifier.width(n.dp)` — legitimate for icons and fixed boxes; for text-bearing containers see R1 |
+| `weight: w` | `Modifier.weight(w)` on the parent's main axis |
+| `margin: {start, end}` | `Modifier.fillMaxWidth().padding(horizontal = start.dp)` |
+| `position: {top, start, …}` | a `Box` child with `Modifier.align(…)`/`offset(…)`; `top`+`bottom` both set = `matchParentSize()` on that axis |
+| `aspectRatio` | `Modifier.aspectRatio(r)` |
+| `clip: true` | `Modifier.clip(shape)` |
 
-A fixed pixel width in the output is almost always the design's frame width leaking into
-the code. A 350dp-wide card inside a 390dp frame is `fillMaxWidth()` with 20dp horizontal
-padding — not `width(350.dp)`. The extractor cannot know this; the generator must.
+A fixed width that equals the design's frame width minus its insets is a leak, not a spec —
+v2's extractor already turns those into `fill` (+ `margin` on the geometry path). One that
+survives is either a real fixed box or a geometry guess worth a second look.
+
+## Text: metrics are layout
+
+Figma and Compose disagree about how tall a line of text is unless told otherwise, and the
+error is per text node — twenty labels each 2–4dp short is a screen 60dp shorter than the
+design, with every gap "wrong" by a little. Build every text style from the IR's numbers:
+
+```kotlin
+TextStyle(
+    fontFamily = Inter,                          // text.style.fontFamily — bundled in res/font
+    fontWeight = FontWeight(600),                // text.style.weight
+    fontSize = 18.sp,                            // text.style.size
+    lineHeight = 24.sp,                          // text.style.lineHeight (numeric)
+    letterSpacing = (-0.36).sp,                  // text.style.letterSpacing (px → sp)
+    platformStyle = PlatformTextStyle(includeFontPadding = false),
+    lineHeightStyle = LineHeightStyle(
+        alignment = LineHeightStyle.Alignment.Center,   // Figma centres the leading on each line
+        trim = LineHeightStyle.Trim.None,               // Figma keeps it above line 1 and below the last
+    ),
+)
+```
+
+- **Always set `lineHeightStyle` explicitly** when `lineHeight` is set. The androidx default
+  is `Alignment.Proportional` + `Trim.Both`, which removes the leading above the first line
+  and below the last — every text box comes out shorter than Figma's. (Compose Multiplatform
+  documents a different default; do not rely on either.)
+- **`lineHeight: "auto"`** (`leading-[normal]`) means the font's own line height. Leave
+  `lineHeight` unspecified and bundle the real font — with Roboto standing in for Inter, the
+  "auto" height is Roboto's, and it differs.
+- **`includeFontPadding = false`** is the default since Compose 1.6 (BOM 2024.01); set it
+  anyway on projects older than that.
+- **`letterSpacing`** in the IR is in px. Use `.sp`; Figma's percent tracking was already
+  converted. `em` is also present when the design used it — `(-0.02).em` is equivalent.
+- **`textCase: upper`** → `text.uppercase()` at the call site (or a string resource that is
+  already uppercase). The design's *content* is "Nén Video Ngay"; what it *shows* is
+  "NÉN VIDEO NGAY".
+- **`runs`** → `buildAnnotatedString { withStyle(SpanStyle(color = …)) { append(…) } }`; each
+  run lists only what differs from the node's own style.
+- **`singleLine` / `ellipsis` / `maxLines`** seed the R2 decision (`maxLines`, `overflow`) —
+  `whitespace-nowrap` in the design is `maxLines = 1`.
+- **`align`** → `textAlign`. **`lines`** is how many lines the design drew at its width —
+  a hint for `maxLines`, not a contract.
+- Put these in the project's typography (a `TextStyle` per distinct size/weight/lineHeight
+  combination) rather than repeating them per call site.
 
 ## Material: the parts Compose gets wrong by default
 
 Three things translate badly from Figma to Compose and cost more visual fidelity than any
 spacing error. Handle them explicitly or the screen will measure correct and look wrong.
 
+**Shadows and gradients are in the IR — emit them.** `style.shadows`, `style.dropShadows`
+and `style.gradient` carry offset, blur, colour and alpha. `gradient.angle` is CSS degrees
+(0 = to top, 90 = to right, 180 = to bottom): convert it to `Brush.linearGradient(start, end)`
+over the node's size, with each stop's `position`.
+
 **Shadows are black unless you say otherwise.** `Modifier.shadow(8.dp, shape)` draws a
 black shadow — invisible on a dark surface. A design with a coloured glow
-(`0px 4px 6px rgba(0,219,130,0.35)`) needs the colour passed:
+(`style.dropShadows[0]` = `{y: 4, blur: 6, color: #00DB82 @ 0.35}`) needs the colour passed:
 
 ```kotlin
 .shadow(

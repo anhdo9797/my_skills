@@ -91,7 +91,7 @@ design-system components it reuses and the composables it declares, and reports 
 against a git ref.
 
 **It is a reviewer's summary, not a stop sign.** Paste it into the PR description: "18 dp
-literals, 12 colours, all marked with Figma node ids; reuses ComposerCard and IconTile;
+literals, 12 colours (each listed with its node in mapping-report.json); reuses ComposerCard and IconTile;
 declares StatsHero, ToolTile, RecentOutputRow." That is the input a reviewer needs to ask
 the right question. Whether those numbers are acceptable depends on the codebase, and that
 judgement belongs to whoever owns it.
