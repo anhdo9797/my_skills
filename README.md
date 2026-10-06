@@ -10,6 +10,11 @@ This repository provides reusable, portable skill packages and workflow guides t
 
 ```text
 my_skills/
+├── app-idea-researcher/     # App Market Research & Idea Scoring Skill
+│   ├── SKILL.md             # Research workflow: data check → discovery → analysis → scoring → report
+│   ├── references/          # Phase methodologies, data-source discovery, dated benchmarks, report template
+│   ├── scripts/             # Public store lookup + weighted scoring/verdict calculator
+│   └── evals/               # Eval prompts and registry fixture
 ├── distribute/              # Notion Task Workflow & Skill Distribution Skill
 │   ├── SKILL.md             # Skill entrypoint & trigger definitions
 │   ├── README.md            # Detailed distribution & Notion integration guide
@@ -79,6 +84,23 @@ Reviews a pull request on any Bitbucket Cloud or Bitbucket Server repository. Fe
 * **Three coverage gates** — user-facing copy, complexity, and compatibility, tracked per changed hunk so no hunk is silently skipped.
 * **Deterministic URL parsing** via [`scripts/parse_pr_url.py`](review-bitbucket-pr/scripts/parse_pr_url.py), which rejects GitHub/GitLab URLs instead of misreading them.
 * Evidence threshold and deduplication rules that suppress style noise and findings an existing unresolved comment already covers.
+
+---
+
+### 4. `app-idea-researcher` — App Market Research & Idea Scoring
+* **Path:** [`app-idea-researcher/`](app-idea-researcher/)
+* **Skill Entrypoint:** [`app-idea-researcher/SKILL.md`](app-idea-researcher/SKILL.md)
+* **Report Template:** [`app-idea-researcher/references/report_template.md`](app-idea-researcher/references/report_template.md)
+
+**Description:**
+Acts as a Product Owner to find, analyze and rank mobile app ideas for a given team. Discovers niches, analyzes competitors with real store data, builds a USP, scores feasibility, and writes a decision report in the user's language — every idea with a verdict, a confidence level and the cheapest validation step.
+
+**Key Features:**
+* **Vendor-neutral data discovery** — finds whatever store-data / ASO tools the session has by capability, probes each once, and classifies plan-locked, transient and silently-null responses ([`references/data_sources.md`](app-idea-researcher/references/data_sources.md)). Never reads MCP config or credentials; with no tools connected it falls back to public store data.
+* **Public store lookup** via [`scripts/store_lookup.py`](app-idea-researcher/scripts/store_lookup.py) — Google Play installs/rating/updated/ads/IAP and App Store ratings, standard library only.
+* **Deterministic scoring** via [`scripts/score.py`](app-idea-researcher/scripts/score.py) — weighted score, one set of verdict bands with hard gates, per-criterion confidence, and downside/scenario sensitivity.
+* **Dated, sourced benchmarks** for subscription funnels, eCPM, CPI, store fees and Vietnam team cost ([`references/benchmarks.md`](app-idea-researcher/references/benchmarks.md)).
+* **Idea registry** (`ideas_registry.md` next to the reports) so later runs reuse and re-score earlier ideas instead of starting over.
 
 ---
 

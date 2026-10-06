@@ -22,21 +22,26 @@ The goal is to find categories where **search demand is high but quality supply 
 ### Search Strategy
 
 1. **App Store keyword research**
-   - Search core category terms in App Store / Google Play
+   - Search core category terms in App Store / Google Play — with the keyword-ranking
+     capability if the capability check found one, otherwise
+     `python3 scripts/store_lookup.py play-search "<kw>" --details` / `ios-search "<kw>"`
    - Note autocomplete suggestions — these reveal real user queries
    - Look for long-tail keywords with fewer results (e.g., "meditation for insomnia"
      vs. "meditation app")
+   - Judge supply by the **quality** of the top 5-10 (installs, rating, last update), not by
+     how many apps a tool says rank — that count is usually a tool cap
 
 2. **Google Trends analysis**
    - Compare interest over time for category terms
    - Check "Related queries" → Rising section for emerging demand
    - Filter by target geography
    - Look for consistent upward trends, not seasonal spikes (unless targeting seasonal)
+   - If Trends can't be fetched in this session, say so — don't describe a curve you didn't see
 
-3. **ASO tool data** (if user has access)
-   - AppTweak, ASODesk, MobileAction, Sensor Tower
+3. **Keyword popularity / difficulty data** (only if the capability check found it working)
    - Focus on: Search Volume vs. Difficulty ratio
    - High volume + low difficulty = opportunity signal
+   - Null popularity or "not synced" = no data, not low demand (see `data_sources.md`)
 
 ### What to look for
 - **Rising search terms** with few quality results in app stores
@@ -59,6 +64,13 @@ Use web search to check these sources for current data:
 | **SensorTower / data.ai blog** | Quarterly app market reports with category growth data |
 | **Y Combinator's RFS** | "Requests for Startups" — signals where smart money sees opportunity |
 | **TikTok / YouTube search** | "Best apps for..." videos — reflects real consumer interest |
+
+### Platform-gap pattern
+
+A proven concept on one platform with no good equivalent on the other (often iOS-only apps
+with no Android version) is a recurring opportunity. Check with `store_lookup.py`: search the
+concept on both stores and compare the top results' rating counts / installs. Then check the
+developer's site or forums for "Android version?" requests — vote counts are demand evidence.
 
 ### Global Trend Scanning Pattern
 
@@ -104,7 +116,8 @@ Negative reviews of existing apps are **gold** for finding opportunities:
 ### Mining Process
 1. Find top 5-10 apps in the niche
 2. Sort reviews by "Most Recent" + filter 1-3 stars
-3. Read 30-50 negative reviews per app
+3. Read 30-50 negative reviews per app — through a review-text capability if available,
+   otherwise from store pages and web searches for complaints (lower confidence; say so)
 4. Categorize complaints into themes
 
 ### Common complaint patterns that signal opportunity

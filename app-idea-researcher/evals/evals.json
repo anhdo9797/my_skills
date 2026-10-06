@@ -1,0 +1,66 @@
+{
+  "skill_name": "app-idea-researcher",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Team mình 3 người (2 Android dev Kotlin, 1 designer), muốn làm app Android bán subscription, thị trường chính là Mỹ. Tìm giúp mình ý tưởng app trong mảng chăm sóc thú cưng, xếp hạng và cho mình báo cáo đầy đủ nhé.",
+      "expected_output": "Runs the full pipeline: capability check first, then discovery, competitor analysis with real store numbers, scoring via the script, and a complete Vietnamese report saved with the naming convention, followed by a registry update.",
+      "files": [],
+      "expectations": [
+        "Probes the available data tools once per capability before the research, without reading .mcp.json or any credentials file",
+        "The report has a Data limitations block with a capability table that marks each capability as available, partial, or unavailable and names the fallback source used",
+        "Every heading in the report is in Vietnamese (e.g. 'Tóm tắt điều hành', 'Phân tích chi tiết', 'Nguồn & Bằng chứng'), with no English section headings over a Vietnamese body",
+        "Competitor snapshots name real apps with installs/ratings and a fetch date, obtained from a store-data tool or scripts/store_lookup.py rather than from memory",
+        "Each of the top ideas has all six subsections: What it is, How it works, Opportunities & Challenges, Revenue projection, MVP timeline, Verdict",
+        "Each scoring table has a confidence column, and the overall scores and verdict labels match the output of scripts/score.py for those scores and confidences",
+        "Verdict labels use only the unified bands (Go >= 7.5, Go có điều kiện 6.5-7.4, Dự phòng 5.5-6.4, Loại < 5.5) and respect the hard gates",
+        "Revenue projections use Android-specific conversion from references/benchmarks.md (around 0.9% download-to-paid, not iOS rates) and cite the benchmark source",
+        "There is exactly one Sources section (no separate appendix) and a Confidence Notes section",
+        "The report is saved as app_research_<YYYY-MM-DD>_<slug>_report.md in draft/ (or the working directory if draft/ does not exist), and ideas_registry.md is created or updated with every scored and rejected idea"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "Just analyze the competitors for habit tracker apps on Google Play US. I don't need a full report or new ideas.",
+      "expected_output": "Runs only Phase 2: a competitor table with real Play data, review-based weaknesses, a competition level, and a short verdict — no full report, no scoring of new ideas.",
+      "files": [],
+      "expectations": [
+        "Does not produce the full idea report (no ranking of new app ideas, no MVP timelines)",
+        "Checks only the capabilities Phase 2 needs (keyword ranking, app metadata, reviews, estimates) and states which were unavailable",
+        "Lists at least 3 real habit tracker apps on Google Play US with installs bucket, rating, rating count and last-updated date, with the fetch date",
+        "Summarizes recurring complaints with evidence from reviews or web complaints, and states the route used and its confidence",
+        "Gives a competition level (Weak / Moderate / Strong) consistent with the thresholds in competitor_analysis_methods.md",
+        "Does not treat a null keyword popularity or a locked endpoint as zero demand or as 'no competitors'"
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "Chấm lại TankMate giúp mình: giờ team chỉ còn 2 người, dùng Flutter thay vì Kotlin. Có còn đáng làm không?",
+      "expected_output": "Reads the registry, reuses the earlier TankMate evidence instead of re-running discovery, re-scores the team-dependent criteria with score.py, and updates the registry row in place with a note.",
+      "files": [
+        "evals/fixtures/ideas_registry.md"
+      ],
+      "expectations": [
+        "Reads evals/fixtures/ideas_registry.md and uses the TankMate row (scores 6/8/8/7/6/7/8, team of 4, Kotlin) as the starting point",
+        "Does not re-run broad niche discovery for other niches",
+        "Explains which criteria change with a 2-person Flutter team (at least Technical Feasibility and Time to MVP) and why, while market-side criteria keep their earlier evidence or are re-verified",
+        "Uses scripts/score.py to compute the new score and verdict, including the downside and a scenario for the test-strip reading spike failing",
+        "Updates the TankMate row in place (score, verdict, team context, date) with a Notes entry describing the change, and leaves the DashDoc row's 'validating' status untouched",
+        "Answers in Vietnamese with a direct recommendation"
+      ]
+    },
+    {
+      "id": 4,
+      "prompt": "Is there real demand for an app that reads aquarium test strips with the phone camera? Give me numbers — search volume and how many people would pay.",
+      "expected_output": "Answers honestly with the data that can actually be reached: says when keyword volume is unavailable instead of inventing it, uses store numbers for competitors and benchmarks for payment, and labels every figure with its confidence.",
+      "files": [],
+      "expectations": [
+        "Does not state a keyword search volume number unless a working tool returned it; if popularity is unavailable or the keyword is not synced, says so explicitly",
+        "Uses real store data (store-data tool or scripts/store_lookup.py) for the existing aquarium apps' installs and ratings, with the fetch date",
+        "Estimates willingness to pay from competitor monetization signals and references/benchmarks.md, presented as a range with the method named",
+        "Labels each number as measured, sourced estimate, or model, with a confidence level",
+        "Names the cheapest validation step that would answer the demand question (e.g. a fake-door test with a pass/fail threshold and an approximate cost)"
+      ]
+    }
+  ]
+}
