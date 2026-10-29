@@ -32,7 +32,7 @@ If a convention stayed unclear after these reads, say so in the result rather th
 
 ## Step 5 — promote it if it recurs
 
-If you review this stack more than once or twice, write a real profile: copy the structure of `flutter-dart.md`, fill in the detectors you derived, save it in this directory, and add it to the selection list in `SKILL.md` step 4. The second review then starts from evidence instead of rediscovering it.
+If you review this stack more than once or twice, write a real profile: copy the structure of `android-kotlin.md` (or `flutter-dart.md`), fill in the detectors you derived, save it in this directory, and add it to the selection list in `SKILL.md` step 4. The second review then starts from evidence instead of rediscovering it.
 
 ## Common cross-language traps
 

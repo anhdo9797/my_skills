@@ -61,11 +61,13 @@ Every mobile screen splits into three horizontal bands. Decide everything using 
 
 Within the content area, sort what you see into two buckets:
 
-| | **Static / structural** — MUST match design | **Dynamic / data-driven** — content WILL differ |
-|---|---|---|
-| Examples | Layout & spacing, component shape/size, colors & theme, fonts/weights, icons, static labels & headings, button text, tab labels, empty/error/loading designs | Photos from API/CDN, user text, list rows, counts/badges, prices, dates & times, avatars, search results |
-| Tier 1 → | Becomes an **assertion** (`assertVisible: "Save Recipe"`) | Do **not** assert exact content; at most assert the container/placeholder exists |
-| Tier 2 → | Part of the **compared** area | **Mask** it (`--mask x1,y1,x2,y2`) so it never trips the diff |
+| | **Static / structural** — MUST match design | **Controlled value** — MUST match the test | **Uncontrolled / live data** — content WILL differ |
+|---|---|---|---|
+| Examples | Layout & spacing, component shape/size, colors & theme, fonts/weights, icons, static labels & headings, button text, tab labels, empty/error/loading designs | Quantities the flow typed, seeded product prices, totals/subtotals computed from them, cart/badge counts after N adds, a date the flow picked, formatted currency | Photos from API/CDN, other users' text, live feed rows, server clock, search results you didn't seed |
+| Tier 1 → | Becomes an **assertion** (`assertVisible: "^Save Recipe$"`) | **Exact value assertion bound to its element** (`copyTextFrom` + `assertTrue`, see below) | Do **not** assert exact content; at most the container, or its format |
+| Tier 2 → | Part of the **compared** area | Mask in the pixel diff — the value check already covers it exactly | **Mask** it (`--mask x1,y1,x2,y2`) so it never trips the diff |
+
+**The middle column is where wrong-value bugs hide.** "Prices are dynamic" is true of the *mockup* and false of a test that seeded the product and tapped `+` twice. Before calling any number dynamic, ask: *could I compute this from what the flow did, the seed data, or other values on the same screen?* If yes, it has an exact expected text — see `ui-metrics.md` → Class A2.
 
 **Worked example — image element.** Figma: recipe card with a placeholder photo, 16:9, rounded, at top. App: a *different* real photo. → content differs = expected. Tier 1: don't assert the photo; assert the title/button around it. Tier 2: mask the photo rectangle, then diff the rest. Only flag if the app renders the image square/un-rounded/misplaced.
 
@@ -102,7 +104,38 @@ env:
 - takeScreenshot: "TC-010_result"         # evidence + Tier 2 baseline input
 ```
 
-What makes a good Tier 1 assertion: it names a **static** element (from the table above), it's specific (exact label text, a stable `id`), and it would still be true tomorrow regardless of API data. Don't assert dynamic content (a specific recipe name, a count, a date) — that makes the test flaky.
+What makes a good Tier 1 assertion: it names a **static** element or a **controlled value** (from the table above), it's specific (exact label text, a stable `id`), and it would still be true tomorrow regardless of API data. Don't assert *uncontrolled* content (another user's recipe name, a live feed count, the server date) — that makes the test flaky. A value the flow itself produced is not flaky; skipping it is how a wrong total ships.
+
+**Asserting a value exactly — don't use `assertVisible` for it.** Maestro's `text:` is a regex, so `assertVisible: "150.000đ"` also matches `150,000đ` and `150x000đ` (`.` is any character), and it checks presence anywhere on screen, not *which* field shows it. Read the field and compare with plain string equality instead:
+
+```yaml
+# Bind to the element (id first; relative selector from its label as fallback)
+- copyTextFrom:
+    id: "total_price"
+- assertTrue:
+    condition: ${maestro.copiedText == "165.000đ"}
+    label: "Total = 2 × 75.000 + 15.000 = 165.000đ"
+
+- copyTextFrom:
+    text: ".*đ"
+    rightOf: "Phí giao hàng"
+- assertTrue: ${maestro.copiedText == "15.000đ"}
+```
+
+For a **derived** value, compute it from the fields on screen in the flow so the check survives a price change in the seed data:
+
+```yaml
+- copyTextFrom: { id: "unit_price" }
+- evalScript: ${output.unit = parseInt(maestro.copiedText.replace(/\D/g, ""))}
+- copyTextFrom: { id: "quantity" }
+- evalScript: ${output.qty = parseInt(maestro.copiedText)}
+- copyTextFrom: { id: "total_price" }
+- assertTrue:
+    condition: ${parseInt(maestro.copiedText.replace(/\D/g, "")) == output.unit * output.qty}
+    label: "Line total = unit price × quantity"
+```
+
+Assert the **formatted string** too when the format is specified (`"165.000đ"`, not only the number) — a `number_format` bug (`165,000đ`, `165000 ₫`) is a real defect that a digits-only comparison hides.
 
 **Maestro's `text:` is a regular expression, not a literal.** So `assertVisible: "Save"` can match a button reading "Save draft", and copy containing `.`, `(`, `?`, `+`, or `*` matches more loosely than it looks. When the exact string is the point, anchor it and escape the metacharacters — `text: "^Save Recipe$"`, `text: "^Quên mật khẩu\?$"`. This is a real source of assertions that pass on the wrong string.
 
@@ -155,7 +188,7 @@ To keep that judgment systematic rather than one impressionistic glance, the scr
   - `scripts/pair_view.py` — **content, presence, style.** It first **crops the screenshot's chrome bands** (status bar, OS nav) so its content lines up with the chrome-less design export, **then** grids both at the same coordinates, computes a real pixel diff, and composes them into one side-by-side image with every cell whose diff exceeds a threshold flagged in amber. Skip straight to `grid_overlay.py` on two independently-gridded images and cell `C4` in one is very likely a different region than `C4` in the other — the chrome heights don't match, so nothing built on that alignment is trustworthy.
   - `scripts/text_audit.py` — **content: the exact strings, from the view hierarchy.** Not from the image: reading copy off a screenshot is OCR by another name, and it is least reliable on the small diacritics that matter most. Every mismatch is Critical; there is no tolerance on text.
   - `scripts/typography_audit.py` — **type: font size and font weight, as ratios.** It measures each text band's x-height and stroke-thickness-over-x-height, both against the design and against its own screen's body text. It never claims an `sp` value — that isn't in a screenshot — but "the heading renders at 0.67× the design's size and at body weight" is measured, and it fails the case.
-  - `scripts/spacing_audit.py` — **geometry: gaps, element heights, side margins, measured in design px/dp.** This is not optional on a spacing question, because `pair_view.py` structurally cannot answer it: to align cells it resizes the design onto the screenshot's width *and* height, which rescales the design's vertical rhythm onto the device's — so a screen whose every padding is inflated by one factor diffs **clean**, and when the aspect ratios differ (an iOS export vs an Android screen: routine) it suppresses its own flags entirely. `spacing_audit.py` scales by **width only**, segments both images into element bands, and compares gap by gap; since gaps are differences between positions, the result survives different chrome, screen size, and density.
+  - `scripts/spacing_audit.py` — **geometry: gaps, element heights, side margins, measured in dp.** This is not optional on a spacing question, because `pair_view.py` structurally cannot answer it: to align cells it resizes the design onto the screenshot's width *and* height, which rescales the design's vertical rhythm onto the device's — so a screen whose every padding is inflated by one factor diffs **clean**, and when the aspect ratios differ (an iOS export vs an Android screen: routine) it suppresses its own flags entirely. `spacing_audit.py` scales by **width only**, segments both images into element bands, and compares gap by gap; since gaps are differences between positions, the result survives different chrome, screen size, and density.
 
 Findings are classified **Critical** (a user would notice and be blocked — overlap, clipping, off-screen content, missing element — or a *measured* deviation outside tolerance) or **Minor** (subjective, or measured but small and localized), and the severity decides the verdict: any Critical → ❌ FAIL, only Minor → 🔍 REVIEW, clean → ✅ PASS. The deliverable is an annotated image with the defective cells washed red, plus the measured numbers in the finding text.
 
@@ -172,9 +205,10 @@ python3 scripts/pair_view.py report/figma/TC-010_default.png report/screenshots/
 # Design mode, part 2 — content: EXACT text, from the hierarchy (never from pixels)
 maestro hierarchy > /tmp/TC-010.json
 python3 scripts/text_audit.py --expected report/figma/TC-010_expected.json \
+    --values report/figma/TC-010_values.json \
     --actual /tmp/TC-010.json --out report/text/TC-010_default.json
 
-# Design mode, part 3 — geometry: MEASURES gaps / heights / margins in design px-dp
+# Design mode, part 3 — geometry: MEASURES gaps / heights / margins in dp
 python3 scripts/spacing_audit.py report/figma/TC-010_default.png report/screenshots/TC-010_default.png \
     --crop-design-top 6% --crop-design-bottom 2% --crop-actual-top 4% \
     --out report/grid/TC-010_default-spacing.png

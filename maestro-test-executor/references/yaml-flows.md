@@ -109,7 +109,7 @@ env:
 - takeScreenshot: "TC-010_result"
 ```
 
-Assert only **static** elements (labels, headings, button text, element presence). Never assert dynamic content (a specific recipe name, count, or date) — that makes the test flaky. If navigation fails or a Tier 1 assertion fails, the TC is a FAIL.
+Assert **static** elements (labels, headings, button text, element presence) **and every controlled value** — anything the flow typed, seeded, or can compute from other fields (quantity, price, subtotal/total, badge count, picked date). Assert values with `copyTextFrom` + `assertTrue` string equality bound to the field, never with `assertVisible` (regex, presence-anywhere): see "Asserting a value exactly" in `ui-validation.md`. Skip only *uncontrolled* content (another user's text, live feed, server clock) — that makes the test flaky. If navigation fails or a Tier 1 assertion fails, the TC is a FAIL.
 
 **Tier 2 (optional) baseline diff** runs after capture, as a separate deterministic step — no Agent:
 

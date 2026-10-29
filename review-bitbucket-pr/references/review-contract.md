@@ -14,6 +14,10 @@ Repository evidence overrides everything here. A project's own convention, visib
 - [Deduplication and placement](#deduplication-and-placement)
 - [Result format](#result-format)
 
+## Review focus
+
+Concentrate on Security, Memory, Architecture, and Clean code as defined in [review-focus.md](review-focus.md). The quality gates below are organised around them; anything that fits none of the four needs a clearly stated impact to be worth a comment.
+
 ## Evidence threshold
 
 Comment only when the issue has practical value and is supported by the changed code plus the context you actually read. A valid finding connects a cause to a reachable behaviour, states the impact, and proposes the smallest correction that fits the existing architecture.
@@ -42,6 +46,11 @@ Record per changed hunk which gates applied and what each returned. A gate you d
 - Async ordering, missing awaits, duplicated requests, stale state, work continuing after the owner is gone.
 - Invalid casts, index access, unclosed resources, listeners and subscriptions never released, rebuild or render loops, blocking work on the UI or request thread, crash paths.
 - Loading and error states terminate on every branch, and the loading, empty, failure, disabled, and success states all stay reachable.
+
+### Mobile runtime and release safety
+
+- For mobile apps, also check lifecycle and process death, main-thread work, offline and failure states, persisted-data migration, OS-version guards, permission denial paths, and backward compatibility with older app versions still in the field. The mobile stack profile supplies the detectors.
+- Release-sensitive changes (signing, version/build numbers, entitlements, manifest exports, feature-flag defaults) are reported factually; do not infer intent.
 
 ### Security and privacy
 
@@ -142,6 +151,7 @@ Return these sections, in this order, in Vietnamese. Keep the recommendation and
 - Minor: <count>
 - Suggestion: <count>
 - Question: <count>
+- Theo trọng tâm: Security <count> · Memory <count> · Architecture <count> · Clean <count> · Khác <count>
 
 ## Comment đã đăng
 
@@ -166,6 +176,7 @@ Use `Không chạy kiểm tra bổ sung.` when none was warranted.
 
 - Khuyến nghị: `Approve | Approve with suggestions | Request changes | Need clarification`
 - Localization: `reviewed | not applicable`
+- Discord: `đã gửi | bỏ qua (<lý do>) | chưa tích hợp | do CI/CD gửi | gửi thất bại (<lý do ngắn>)`
 ```
 
 Counts are unique root causes, not comment attempts. Report posted comments and failed attempts truthfully — the summary is the only part most readers will read, so an inaccuracy there is the most expensive kind.

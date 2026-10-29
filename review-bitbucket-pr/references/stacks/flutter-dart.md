@@ -1,6 +1,6 @@
 # Stack profile: Flutter / Dart
 
-Use this profile when the diff touches `.dart` files or the repository has a `pubspec.yaml`. It supplies the concrete detectors for the contract's coverage and quality gates. It does not replace them — read `../review-contract.md` first.
+Use this profile when the diff touches `.dart` files or the repository has a `pubspec.yaml`. Read `mobile-common.md` first — it covers the platform-neutral mobile risks (process death, offline data, permissions, mobile security, OS compatibility); this file adds only the Flutter-specific detectors. When the diff also touches `android/` or `ios/` native code or a method channel, read `android-kotlin.md` / `ios-swift.md` for those files. It does not replace the contract's gates — read `../review-contract.md` first.
 
 Everything here yields to the repository's own conventions. Confirm the localization mechanism, the state-management library, and the generated-file layout from the repo before applying the defaults below.
 

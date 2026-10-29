@@ -1,6 +1,6 @@
 ---
 name: review-bitbucket-pr
-description: Review a Bitbucket pull request from its URL — fetch the diff, validate every finding against the repository's own rules and reachable code paths, post evidence-backed inline comments, and return a severity summary with a merge recommendation. Works on any Bitbucket Cloud or Server repository in any language by deriving each project's conventions from the repository itself. Use whenever the user asks to review, inspect, check, comment on, or dry-run a pull request, or supplies a Bitbucket PR URL, even when they do not explicitly ask for comments to be posted. Do not use for implementing fixes, or for GitHub/GitLab reviews.
+description: Review a Bitbucket pull request from its URL — fetch the diff, validate every finding against the repository's own rules and reachable code paths, post evidence-backed inline comments, and return a severity summary with a merge recommendation. Specialised for mobile apps (Android, iOS, Flutter, React Native, cross-platform) with lifecycle, threading, offline, permission, security, OS-compatibility and release-safety checks, and still works on any Bitbucket Cloud or Server repository in any language by deriving each project's conventions from the repository itself. Use whenever the user asks to review, inspect, check, comment on, or dry-run a pull request, or supplies a Bitbucket PR URL, even when they do not explicitly ask for comments to be posted. Do not use for implementing fixes, or for GitHub/GitLab reviews.
 compatibility: Live review needs a Bitbucket MCP connector that can read pull requests, diffs, comments and repository files, and create inline comments. Dry-run review works from a local diff, patch, or fixture with no connector at all. Local repository access is optional and strictly read-only.
 ---
 
@@ -12,7 +12,9 @@ Review exactly the pull request the user pointed at, comment only where a findin
 
 Read [references/review-contract.md](references/review-contract.md) before reviewing. It owns the evidence threshold, quality gates, severity model, comment template, deduplication semantics, and the result format. This file owns the workflow around it; when the two seem to overlap, the contract wins on *what counts as a finding* and this file wins on *how to run the review*.
 
-Then load exactly one stack profile (step 4). Profiles live in `references/stacks/`.
+Also read [references/review-focus.md](references/review-focus.md). It defines the four pillars this skill concentrates on — **Security, Memory, Architecture, Clean code** — their review priority, and what each looks like. Findings outside those pillars face a higher bar.
+
+Then load the stack profile(s) (step 4). Profiles live in `references/stacks/`.
 
 ## Two modes
 
@@ -85,14 +87,22 @@ Never read environment files, credentials, tokens, secrets, databases, private k
 
 Detect the stack from the changed paths and the repository manifest (`pubspec.yaml`, `package.json`, `go.mod`, `build.gradle`, `pyproject.toml`, …), then read the matching profile:
 
-- Flutter / Dart → [references/stacks/flutter-dart.md](references/stacks/flutter-dart.md)
-- Anything else, or a mixed diff whose main risk sits outside a known profile → [references/stacks/deriving-a-profile.md](references/stacks/deriving-a-profile.md)
+This skill's primary target is **mobile apps**. For any mobile repository (an `android/`/`ios/` tree, `AndroidManifest.xml`, `*.xcodeproj`, `Podfile`, `pubspec.yaml`, or `react-native`/`expo` in `package.json`), always read the platform-neutral core first, then exactly one platform profile for the files under review:
 
-A profile supplies the concrete detectors for that ecosystem: what a user-facing string looks like, what the localization mechanism is, where lifecycle bugs hide, which files are generated. The universal gates in the contract stay the same across every stack; only the detectors change. When the diff spans two stacks, read both profiles but review each file under its own.
+- Any mobile diff → [references/stacks/mobile-common.md](references/stacks/mobile-common.md) (lifecycle and process death, threading, offline and persisted data, mobile security, permissions, OS compatibility, accessibility, performance, release safety)
+- Flutter / Dart → [references/stacks/flutter-dart.md](references/stacks/flutter-dart.md)
+- Android Kotlin / Java → [references/stacks/android-kotlin.md](references/stacks/android-kotlin.md)
+- iOS Swift / Objective-C → [references/stacks/ios-swift.md](references/stacks/ios-swift.md)
+- React Native / Expo → [references/stacks/react-native.md](references/stacks/react-native.md)
+- Non-mobile code, or a diff whose main risk sits outside a known profile (backend, web, tooling) → [references/stacks/deriving-a-profile.md](references/stacks/deriving-a-profile.md)
+
+A profile supplies the concrete detectors for that ecosystem: what a user-facing string looks like, what the localization mechanism is, where lifecycle bugs hide, which files are generated. The universal gates in the contract stay the same across every stack; only the detectors change. When the diff spans several stacks (for example React Native JS plus native Android and iOS modules, or an app plus its backend), read each relevant profile but review each file under its own. Treat mobile-specific impact as first-class: a change that is harmless on a server can be a crash, a store rejection, or a broken upgrade on a device that cannot be redeployed.
 
 ### 5. Review behaviour before style
 
 Read every changed hunk, plus enough surrounding code to prove or disprove each candidate issue. When a changed symbol can affect behaviour outside its file, follow it to its direct callers.
+
+Evaluate each hunk against the four pillars in `review-focus.md` and tag every candidate finding `Security`, `Memory`, `Architecture`, or `Clean`.
 
 Run the contract's three coverage gates — **user-facing copy**, **complexity**, and **compatibility** — against every changed hunk they apply to, using your stack profile's detectors. Keep a running note in your working context, one row per changed hunk, recording which gates applied and what each returned. This is not bureaucracy: without it, hunk 9 of 14 silently gets skipped because hunk 8 looked similar, and a skipped hunk is indistinguishable in the final report from a clean one.
 
@@ -107,7 +117,7 @@ For each candidate finding, establish all of:
 
 If any of those is missing, you have a suspicion rather than a finding. Discard speculation and personal preference. When business behaviour is genuinely ambiguous, raise a `Question` — but only when the missing answer would change the verdict.
 
-**Large pull requests.** "Every hunk" stops being achievable somewhere past a few hundred changed lines. When the diff is larger than you can review with real evidence, order the hunks by risk — public API and data-model changes, then async and state handling, then security-relevant paths, then everything else — review as far down that order as your budget allows, and state the achieved coverage plainly in the result. An honest "reviewed 40 of 120 files, prioritised by risk" is useful; an implied full review that was not performed is not.
+**Large pull requests.** "Every hunk" stops being achievable somewhere past a few hundred changed lines. When the diff is larger than you can review with real evidence, order the hunks by risk, following the pillar priority (Security, then Memory, then Architecture, then Clean code) and within it public API and data-model changes and async/state handling first — review as far down that order as your budget allows, and state the achieved coverage plainly in the result. An honest "reviewed 40 of 120 files, prioritised by risk" is useful; an implied full review that was not performed is not.
 
 ### 6. Deduplicate and anchor
 
@@ -138,12 +148,16 @@ A single Minor is deliberately not enough to request changes: blocking a PR on a
 
 State the applicable copy/localization outcome exactly once, as the contract specifies. This is a recommendation in text only — do not execute an approve action.
 
+### 9. Notify (optional, live mode only)
+
+After a completed live review, follow [references/discord-notification.md](references/discord-notification.md). It discovers dynamically whether the reviewed project already has a Discord notification flow (recorded in its `AGENTS.md`/`CLAUDE.md`, or an existing script/CI step in any folder). If one is recorded, send one notification with no further questions; if none exists, offer once to set it up (script folder, env source, test, then record it). Never send on dry run, partial coverage, a moved head, or a failed query, and never let a notification failure change the review result. Add the one-line `Discord:` status to the result.
+
 ## Read-only verification
 
-Run a check only when it materially validates a finding you are about to post. Use the repository's own commands (for Flutter and Dart projects here, that means `fvm flutter` / `fvm dart`). Prefer one focused test over a full analysis pass. Do not generate files, update dependencies, or write to the working tree.
+Run a check only when it materially validates a finding you are about to post. Use the repository's own commands through the wrapper the stack profile names (for Flutter here, `fvm flutter` / `fvm dart`; for Android, `./gradlew`; for iOS, `xcodebuild`; for React Native, the repo's package script). Prefer one focused test over a full analysis pass. Do not generate files, update dependencies, or write to the working tree.
 
 Report command, outcome, and the relevant failure line, briefly. A red pipeline is a lead to investigate, not automatically a code-review finding — it may predate the PR.
 
 ## Extending to a new stack
 
-When you repeatedly review a stack that has no profile, write one: copy the shape of `references/stacks/flutter-dart.md`, fill in that ecosystem's detectors, and add it to the list in step 4. `deriving-a-profile.md` explains how to build the detector list from a repository you have not seen before, and is also the correct fallback for a one-off review.
+When you repeatedly review a stack that has no profile (for example Kotlin Multiplatform, .NET MAUI, or Unity mobile), write one: copy the shape of `references/stacks/android-kotlin.md`, fill in that ecosystem's detectors, and add it to the list in step 4. `deriving-a-profile.md` explains how to build the detector list from a repository you have not seen before, and is also the correct fallback for a one-off review.

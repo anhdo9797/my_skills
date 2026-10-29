@@ -21,19 +21,21 @@ developer needs "the gap under the search bar is 30dp, design says 22dp".
 
 THE METHOD — measure, don't diff
 --------------------------------
-1. Scale by WIDTH ONLY. Mobile layouts pin horizontal metrics (side padding,
-   card width) and let content flow vertically, so width is the honest shared
-   unit. Normalizing both images to the design's width puts every measurement
-   into design px — which, for a 1x design export (e.g. a 390pt iPhone frame
-   exported at 390px), IS dp. Crucially, heights are NOT forced to match, so
-   vertical error stays in the data instead of being scaled out of it.
+1. Convert each side to dp by its OWN density — the design by its export
+   scale, the screenshot by the device density (read from adb, or given with
+   --actual-width-dp). Spacing on native/Flutter is fixed in dp across phone
+   widths, so stretching a 360 dp phone onto a 390 dp frame would inflate every
+   gap by 8%. Heights are NOT forced to match, so vertical error stays in the
+   data instead of being scaled out of it. (--scale-mode width restores the old
+   stretch-to-design-width for layouts that really scale with width.)
 2. Segment each image into horizontal content BANDS separated by empty GAPS,
    using an ink profile (per-row fraction of pixels differing from the modal
    background colour). Bands are the elements; gaps are the spacing.
 3. Align the two band sequences in order (allowing skips, since real data
    differs from mockup data), then compare GAP BY GAP and BAND HEIGHT BY BAND
    HEIGHT.
-4. Report every deviation as a number, plus a systematic-inflation factor — the
+4. Flag anything more than --tolerance-dp (default 8 dp) off the design.
+   Report every deviation as a number, plus a systematic-inflation factor — the
    median actual/design gap ratio. A factor of 1.35 means "every gap on this
    screen is ~35% bigger than the design", which is a single root cause (one
    wrong spacing token / theme value), not fifteen separate findings.
@@ -75,8 +77,12 @@ USAGE
       --mask-actual 60%,88%,100%,100% --out report/TC-01-spacing.png
 
   # design frame is 390pt exported at 2x (780px wide) -> report real dp
+  # (inferred automatically when omitted; check design_width_dp in the output)
   python3 spacing_audit.py DESIGN.png ACTUAL.png --design-width-dp 390 \\
       --out report/TC-01-spacing.png
+
+  # tolerance: every gap / height / margin may differ by 8 dp (default)
+  python3 spacing_audit.py DESIGN.png ACTUAL.png --tolerance-dp 8
 
 Reads the JSON on stdout for the numbers; read the PNG with vision to see which
 band is which. Dependency: Pillow (pip3 install Pillow).
@@ -97,6 +103,15 @@ except ImportError:
     )
     sys.exit(2)
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from units import (  # noqa: E402
+    DEFAULT_TOLERANCE_DP,
+    out_of_tolerance,
+    resolve_actual_width_dp,
+    resolve_design_width_dp,
+)
+
+# In dp; converted to working px once the design scale is known.
 GAP_CANDIDATES = (8, 10, 12, 14, 16, 20, 24)
 
 
@@ -302,7 +317,7 @@ def annotate(img, bands, labels, gap_notes, px_to_dp, title, flagged_gaps):
     canvas = Image.new("RGB", (w, h + header), (24, 24, 24))
     canvas.paste(out, (0, header))
     d2 = ImageDraw.Draw(canvas)
-    unit = "dp" if px_to_dp != 1.0 else "px"
+    unit = "dp"
     d2.text((w / 2, header / 2), f"{title}  (values in design {unit})",
             font=_load_font(max(12, int(header * 0.5))), anchor="mm",
             fill=(255, 255, 255))
@@ -338,30 +353,48 @@ def main():
     ap.add_argument("--row-threshold", type=float, default=0.006,
                     help="fraction of a row that must be ink for the row to be content "
                          "(default 0.006 — about one thin text stroke)")
-    ap.add_argument("--min-band", type=int, default=3,
-                    help="drop bands thinner than this many design px (default 3)")
+    ap.add_argument("--min-band", type=float, default=3,
+                    help="drop bands thinner than this many dp (default 3)")
     ap.add_argument("--min-gap", default="auto",
-                    help="gaps thinner than this many design px are absorbed into the "
+                    help="gaps thinner than this many dp are absorbed into the "
                          "band (line leading, not layout spacing). 'auto' (default) "
                          f"tries {list(GAP_CANDIDATES)} and keeps the most comparable.")
     ap.add_argument("--design-width-dp", type=float, default=0.0,
-                    help="logical width of the design frame in dp/pt. Set it when the "
-                         "export is not 1x (e.g. 390pt frame exported 780px wide) so "
-                         "the report is in real dp instead of export px.")
-    ap.add_argument("--gap-tolerance-px", type=float, default=4.0,
-                    help="absolute slack per gap in design px (default 4) — below this, "
-                         "a difference is rendering noise, not a spacing bug")
-    ap.add_argument("--gap-tolerance-pct", type=float, default=0.18,
-                    help="relative slack per gap (default 0.18 = 18%%). A gap is flagged "
-                         "only when it exceeds BOTH tolerances.")
-    ap.add_argument("--height-tolerance-px", type=float, default=4.0,
-                    help="absolute slack on a band's height in design px (default 4)")
-    ap.add_argument("--height-tolerance-pct", type=float, default=0.18,
-                    help="relative slack on a band's height (default 0.18 = 18%%). A "
-                         "height is flagged only when it exceeds BOTH tolerances.")
-    ap.add_argument("--margin-tolerance-px", type=float, default=4.0,
-                    help="slack on a band's left/right ink extent in design px (default 4)")
+                    help="logical width of the design frame in dp/pt (e.g. 390). "
+                         "Inferred from the export width when omitted (1170px -> "
+                         "390dp at 3x); the result states what was used.")
+    ap.add_argument("--actual-width-dp", type=float, default=0.0,
+                    help="logical width of the device screen in dp (e.g. 411). "
+                         "Inferred when omitted; 1080px is ambiguous (360 @3x vs "
+                         "411 @2.625x), so on Android read it: adb shell wm size, "
+                         "wm density -> width_px * 160 / density")
+    ap.add_argument("--scale-mode", choices=("density", "width"), default="density",
+                    help="density (default): each side -> dp by its own density; "
+                         "spacing is fixed in dp on native/Flutter. width: stretch "
+                         "the screenshot to the design's width (responsive layouts)")
+    ap.add_argument("--tolerance-dp", type=float, default=DEFAULT_TOLERANCE_DP,
+                    help="allowed deviation for gaps, heights and margins, in dp "
+                         f"(default {DEFAULT_TOLERANCE_DP:g}). One number, one unit")
+    ap.add_argument("--gap-tolerance-px", "--gap-tolerance-dp", dest="gap_tolerance_dp",
+                    type=float, default=None,
+                    help="override --tolerance-dp for gaps (dp)")
+    ap.add_argument("--gap-tolerance-pct", type=float, default=0.0,
+                    help="optional relative gate (0.18 = 18%%); when set, a gap must "
+                         "exceed BOTH it and the dp tolerance. Default 0 = off")
+    ap.add_argument("--height-tolerance-px", "--height-tolerance-dp",
+                    dest="height_tolerance_dp", type=float, default=None,
+                    help="override --tolerance-dp for element heights (dp)")
+    ap.add_argument("--height-tolerance-pct", type=float, default=0.0,
+                    help="optional relative gate for heights. Default 0 = off")
+    ap.add_argument("--margin-tolerance-px", "--margin-tolerance-dp",
+                    dest="margin_tolerance_dp", type=float, default=None,
+                    help="override --tolerance-dp for side margins (dp)")
     args = ap.parse_args()
+    gap_tol = args.gap_tolerance_dp if args.gap_tolerance_dp is not None else args.tolerance_dp
+    height_tol = (args.height_tolerance_dp if args.height_tolerance_dp is not None
+                  else args.tolerance_dp)
+    margin_tol = (args.margin_tolerance_dp if args.margin_tolerance_dp is not None
+                  else args.tolerance_dp)
 
     for path in (args.design, args.actual):
         if not os.path.exists(path):
@@ -383,10 +416,24 @@ def main():
     # Width-only normalization: the design's width becomes the measurement unit
     # and vertical error is preserved rather than scaled away.
     unit_w = design.width
-    scale = unit_w / actual.width
-    actual = actual.resize((unit_w, max(1, int(round(actual.height * scale)))),
+    design_width_dp, width_source = resolve_design_width_dp(unit_w, args.design_width_dp)
+    px_to_dp = design_width_dp / unit_w
+    if args.scale_mode == "width":
+        actual_width_dp, actual_width_source = design_width_dp, "width mode (stretched)"
+        scale = unit_w / actual.width
+    else:
+        actual_width_dp, actual_width_source = resolve_actual_width_dp(
+            actual.width, args.actual_width_dp)
+        # actual px -> dp -> working px (the design's px per dp)
+        scale = (actual_width_dp / actual.width) / px_to_dp
+    actual = actual.resize((max(1, int(round(actual.width * scale))),
+                            max(1, int(round(actual.height * scale)))),
                            Image.LANCZOS)
-    px_to_dp = (args.design_width_dp / unit_w) if args.design_width_dp else 1.0
+    act_w = actual.width
+    # Every threshold is in dp; px_to_dp is always known (given or inferred),
+    # so a 3x export no longer turns "4 px" into 1.3 dp of anti-aliasing noise.
+    def to_px(value_dp):
+        return max(1, int(round(value_dp / px_to_dp)))
 
     def prepare(img, masks):
         img = img.copy()
@@ -422,8 +469,8 @@ def main():
     if args.min_gap == "auto":
         best = None
         for candidate in GAP_CANDIDATES:
-            bd = segment(prof_d, args.row_threshold, args.min_band, candidate)
-            ba = segment(prof_a, args.row_threshold, args.min_band, candidate)
+            bd = segment(prof_d, args.row_threshold, to_px(args.min_band), to_px(candidate))
+            ba = segment(prof_a, args.row_threshold, to_px(args.min_band), to_px(candidate))
             matched = len(align(bd, ba))
             unmatched = (len(bd) - matched) + (len(ba) - matched)
             score = (matched, -unmatched, -candidate)
@@ -431,9 +478,9 @@ def main():
                 best = (score, candidate, bd, ba)
         min_gap, bands_d, bands_a = best[1], best[2], best[3]
     else:
-        min_gap = int(args.min_gap)
-        bands_d = segment(prof_d, args.row_threshold, args.min_band, min_gap)
-        bands_a = segment(prof_a, args.row_threshold, args.min_band, min_gap)
+        min_gap = float(args.min_gap)
+        bands_d = segment(prof_d, args.row_threshold, to_px(args.min_band), to_px(min_gap))
+        bands_a = segment(prof_a, args.row_threshold, to_px(args.min_band), to_px(min_gap))
 
     pairs = align(bands_d, bands_a)
     matched_d = {i for i, _ in pairs}
@@ -464,8 +511,8 @@ def main():
         hd = bands_d[i][1] - bands_d[i][0]
         ha = bands_a[j][1] - bands_a[j][0]
         delta = ha - hd
-        over = abs(delta) > args.height_tolerance_px and (
-            hd == 0 or abs(delta) / hd > args.height_tolerance_pct)
+        over = out_of_tolerance(hd * px_to_dp, ha * px_to_dp, height_tol,
+                                args.height_tolerance_pct)
         if over:
             flagged_heights.append(f"B{n}")
         band_rows.append({
@@ -495,8 +542,8 @@ def main():
         gd = bands_d[i1][0] - bands_d[i0][1]
         ga = bands_a[j1][0] - bands_a[j0][1]
         delta = ga - gd
-        over = abs(delta) > args.gap_tolerance_px and (
-            gd == 0 or abs(delta) / gd > args.gap_tolerance_pct)
+        over = out_of_tolerance(gd * px_to_dp, ga * px_to_dp, gap_tol,
+                                args.gap_tolerance_pct)
         if over:
             flagged_d.add(key)
             flagged_a.add(key)
@@ -517,6 +564,14 @@ def main():
     else:
         systematic = None
 
+    # "Systematic" = most comparable gaps are out of tolerance AND in the same
+    # direction: one wrong spacing token, not many independent mistakes.
+    comparable = [r for r in gap_rows if r.get("comparable")]
+    over_up = sum(1 for r in comparable if r["flagged"] and r["delta"] > 0)
+    over_down = sum(1 for r in comparable if r["flagged"] and r["delta"] < 0)
+    systematic_same_direction = bool(comparable) and (
+        max(over_up, over_down) >= max(3, 0.6 * len(comparable)))
+
     # Horizontal extent per matched band: a side-padding or width bug shows up
     # here, and it is measured in the same unit as everything else.
     margin_rows = []
@@ -525,14 +580,14 @@ def main():
         ea = col_extent(mask_a, bands_a[j][0], bands_a[j][1], args.row_threshold)
         if not ed or not ea:
             continue
-        left_delta, right_delta = ea[0] - ed[0], (unit_w - ea[1]) - (unit_w - ed[1])
-        if (abs(left_delta) > args.margin_tolerance_px
-                or abs(right_delta) > args.margin_tolerance_px):
+        left_delta, right_delta = ea[0] - ed[0], (act_w - ea[1]) - (unit_w - ed[1])
+        if (abs(left_delta) * px_to_dp > margin_tol
+                or abs(right_delta) * px_to_dp > margin_tol):
             margin_rows.append({
                 "band": f"B{n}",
                 "design_left": dp(ed[0]), "actual_left": dp(ea[0]),
                 "left_delta": dp(left_delta),
-                "design_right": dp(unit_w - ed[1]), "actual_right": dp(unit_w - ea[1]),
+                "design_right": dp(unit_w - ed[1]), "actual_right": dp(act_w - ea[1]),
                 "right_delta": dp(right_delta),
                 # Only out-of-tolerance rows are emitted at all, but the flag is
                 # stated rather than implied: a reader (or the report) should not
@@ -541,7 +596,7 @@ def main():
                 "flagged": True,
             })
 
-    unit = "dp" if px_to_dp != 1.0 else "px"
+    unit = "dp"
 
     def notes(bands, pair_index, side):
         out = []
@@ -568,7 +623,7 @@ def main():
                      px_to_dp, "ACTUAL", flagged_a)
 
     gap_px = max(4, int(unit_w * 0.02))
-    canvas = Image.new("RGB", (unit_w * 2 + gap_px, max(left.height, right.height)),
+    canvas = Image.new("RGB", (unit_w + gap_px + right.width, max(left.height, right.height)),
                        (24, 24, 24))
     canvas.paste(left, (0, 0))
     canvas.paste(right, (unit_w + gap_px, 0))
@@ -599,14 +654,18 @@ def main():
         "gaps": gap_rows,
         "band_heights": band_rows,
         "margin_deviations": margin_rows,
+        "design_width_dp": design_width_dp,
+        "design_width_source": width_source,
+        "actual_width_dp": actual_width_dp,
+        "actual_width_source": actual_width_source,
+        "scale_mode": args.scale_mode,
         "tolerances": {
-            "gap_px": args.gap_tolerance_px, "gap_pct": args.gap_tolerance_pct,
-            "height_px": args.height_tolerance_px,
-            "height_pct": args.height_tolerance_pct,
-            "margin_px": args.margin_tolerance_px,
-            "note": "a gap or height is flagged only when it exceeds BOTH its "
-                    "absolute and its relative tolerance; a margin uses the "
-                    "absolute one alone",
+            "gap_dp": gap_tol, "height_dp": height_tol, "margin_dp": margin_tol,
+            "gap_pct": args.gap_tolerance_pct or None,
+            "height_pct": args.height_tolerance_pct or None,
+            "note": "each side is converted to dp by its own density (or "
+                    "stretched by width with --scale-mode width); a value is flagged when it differs from the design by "
+                    "more than its dp tolerance (and its pct gate, when one is set)",
         },
     }
 
@@ -630,8 +689,8 @@ def main():
                 f"{len(margin_rows)} margin) — treat each as a lead to confirm on a "
                 f"sounder segmentation, not as a verdict."
             )
-    elif systematic and len(ratios) >= 3 and abs(systematic - 1.0) > args.gap_tolerance_pct:
-        direction = "larger" if systematic > 1 else "smaller"
+    elif systematic and len(ratios) >= 3 and systematic_same_direction:
+        direction = "larger" if over_up >= over_down else "smaller"
         summary["verdict"] = (
             f"SPACING DEVIATION: gaps on the device are systematically "
             f"{abs(systematic - 1) * 100:.0f}% {direction} than the design "

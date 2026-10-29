@@ -25,7 +25,7 @@ Both classes fail hard. That is the point — a measured deviation is not a matt
 
 **Text has no tolerance, so it must not be measured — it must be read.** "Đăng nhập" and "Dang nhap" differ by diacritics and mean different things to a user. "Save" where the design says "Save draft" is a different product. There is no percentage that makes these acceptable, so the only correct comparison is character-for-character equality — and that means reading the actual string from the framework, not recognizing it from pixels. Vision is the wrong instrument here: it silently normalizes what it half-recognizes, and it is least reliable on exactly the small marks that matter most in Vietnamese copy.
 
-**Geometry and typography have no absolute truth in a screenshot, so they must not be read — they must be measured, relatively.** A screenshot has no dp in it. The same screen is 1080 px wide on one device and 1284 on another; a design frame is 390 px at 1x and 1170 at 3x. Every absolute pixel number is an artefact of which device and which export you happened to have. What survives all of that is a **ratio**, and a ratio is exactly what a design parity question is actually asking: *is this gap the size the design says, proportionally? is the title still 1.8× body?* So never claim `24dp` from an image. Claim `1.33× the design's gap` and quote the design px behind it.
+**Geometry and typography have no absolute truth in a screenshot, so they must not be read — they must be measured, relatively.** A screenshot has no dp in it. The same screen is 1080 px wide on one device and 1284 on another; a design frame is 390 px at 1x and 1170 at 3x. Every absolute pixel number is an artefact of which device and which export you happened to have. What survives all of that is a **ratio**, and a ratio is exactly what a design parity question is actually asking: *is this gap the size the design says, proportionally? is the title still 1.8× body?* So never claim `24dp` from an image. Claim `1.33× the design's gap` and quote the dp behind it.
 
 ### Two ratios, because they fail differently
 
@@ -36,9 +36,20 @@ Every Class B check computes both, and either one going out of band is a finding
 
 A screen with a uniformly shrunk type scale passes the intra-screen check and fails the cross-image one. A screen where only the heading lost its style does the reverse. Reporting one without the other misses half the bugs.
 
-### Why width is the shared unit
+### The shared unit: dp, each side by its own density
 
-Both geometry scripts normalize by **width only**. Mobile layouts pin horizontal metrics (side padding, card width, gutters) and let content flow vertically, so width is the honest shared dimension. Forcing the heights to match as well — which is what a naive side-by-side resize does — rescales the design's vertical rhythm onto the device's and normalizes the spacing error out of existence. That is precisely how a 30%-too-loose screen passes a "design comparison" (see the note on `pair_view.py` below).
+All three geometry scripts (`layout_audit`, `spacing_audit`, `typography_audit`) convert **each side to dp by its own density** — the design by its export scale, the screenshot by the device's density — and compare in dp against **one fixed tolerance: ±8 dp** (`--tolerance-dp`). That is the relative part: resolution and export scale cancel out, so a 1170 px @3x Figma export and a 1080 px @2.8x phone land in the same unit. Heights are never forced to match — which is what a naive side-by-side resize does, rescaling the design's vertical rhythm onto the device's and normalizing the spacing error out of existence (see the note on `pair_view.py` below).
+
+**Why not stretch the screenshot to the design's width** (the old behaviour, still available as `--scale-mode width`): native and Flutter layouts keep spacing fixed in dp across phone widths. Stretching a 360 dp phone onto a 390 dp frame reads a correct 100 dp gap as 108 dp and a correct 16 sp title as 17.3 — false failures produced by the instrument. Use `width` mode only for layouts that genuinely scale with screen width.
+
+**Where the dp widths come from** — check `design_width_dp` / `actual_width_dp` and their `*_source` in every result before quoting a number:
+
+| Side | Source, in order |
+|---|---|
+| Design | `--design-width-dp` → inferred from the export width (1170 px → 390 dp @3x, 1080 → 360 @3x, 780 → 390 @2x) |
+| Device | `--actual-width-dp` → **read from `adb` automatically** when exactly one Android device is connected and its pixel width equals the screenshot's (`wm size` × 160 / `wm density`) → inferred from pixel width |
+
+Inference is a last resort and says so: a 1080 px screenshot is 360 dp @3x, 384 dp @2.8x, 393 dp @2.75x or 411 dp @2.625x — up to 14% apart, which is larger than any tolerance. The result prints `AMBIGUOUS` when that happens. On iOS (no adb), pass the device's point width: iPhone SE 375, iPhone 13/14 390, iPhone 15/16 393, Plus/Pro Max 428–440.
 
 ## Class A — text content, exactly
 
@@ -55,7 +66,7 @@ maestro hierarchy > /tmp/screen.json          # or: adb exec-out uiautomator dum
 python3 scripts/text_audit.py \
     --expected report/figma/TC-010_expected.json \
     --actual /tmp/screen.json \
-    --ignore '^\d' --ignore 'đ$' \
+    --values report/figma/TC-010_values.json \
     --out report/text/TC-010_default.json
 ```
 
@@ -69,7 +80,36 @@ Redirect the dump to a file — never let a raw hierarchy into context (see `sel
 | `missing[]` | Expected copy that isn't on screen at all. Check first whether the flow actually reached the right state — a missing string is often a navigation problem, not a copy problem. |
 | `defects[]` | Found without needing an expected list: `truncated` (the string itself ends in an ellipsis), `untranslated_key` (an i18n key leaked to the UI), `off_screen`, `collapsed_bounds`. All Critical. |
 | `extra_on_screen[]` | Text the expected list doesn't mention. Informational by default — most of it is live data. Pass `--strict-extra` only on a screen whose copy is fully specified. |
-| `ignored_as_dynamic[]` | What your `--ignore` patterns absorbed. Skim it: if a *static* label got ignored, the pattern is too broad and the check has a hole. |
+| `values[]` | One row per `--values` entry: the element it resolved to (`via`: `id` / `label:right` / `label:below` / `inline_label`), expected vs actual, and `difference` — `value` (wrong number: calculation / binding bug), `number_format` (same digits, wrong separators or currency: locale bug), `format`, or `label_not_found` / `element_not_found`. Every non-exact row is **Critical**. |
+| `ignored_as_dynamic[]` | What your `--ignore` patterns absorbed. Skim it: if a *static* label **or a value the test could predict** got ignored, the pattern is too broad and the check has a hole. `--ignore` only silences *extras*; it never excuses an `--expected` or `--values` entry. |
+
+### Class A2 — values: the text a test controls is not "dynamic"
+
+The single biggest hole in a UI case is filing every number under "dynamic data" and never checking it. A price, total, count, quantity, badge, date or computed field is **only** uncontrolled when nothing in the test determines it. Most of the time something does:
+
+| The value is… | Its expected text comes from | Check |
+|---|---|---|
+| **Entered by the flow** — typed quantity, chosen option, filled name | The flow's own `inputText` / taps | Exact, bound to its element |
+| **Seeded** — fixture account, mock API, known product | The seed data / test plan | Exact, bound to its element |
+| **Derived** from other values on screen — subtotal = Σ(qty × unit price), total = subtotal + ship − discount, badge = items added, "Còn 3 món" after removing one | Arithmetic over values the audit reads | Exact, computed — compute it, don't eyeball it |
+| **Formatted** by a rule — `150.000đ`, `12/03/2026`, `+84 …` | The spec's format | `pattern` (full-match regex) when the content itself is uncontrolled |
+| **Truly uncontrolled** — another user's post, server clock, live feed | Nothing | Format at most; content excluded, and say so |
+
+Only the last row is dynamic. Put everything above it in a values file — one entry per field, **bound to its element** by `id` or by the `label` it sits beside:
+
+```json
+[
+  {"name": "subtotal", "label": "Tạm tính",      "expected": "150.000đ"},
+  {"name": "shipping", "label": "Phí giao hàng", "expected": "15.000đ"},
+  {"name": "total",    "label": "Tổng cộng",     "expected": "165.000đ"},
+  {"name": "badge",    "id": "cart_badge",       "expected": "2"},
+  {"name": "eta",      "label": "Ngày giao",     "pattern": "\\d{2}/\\d{2}/\\d{4}"}
+]
+```
+
+**Why bound, not just listed:** a presence check ("is `165.000đ` somewhere on screen?") passes when subtotal and total are swapped, when every row shows the first row's price, when the badge still shows the previous screen's count — every expected string is still present *somewhere*. Binding the value to its element is what catches the bugs that actually ship.
+
+**Write the arithmetic down.** For a derived value, record the computation in the TC (`total = 2 × 75.000 + 15.000 = 165.000đ`) and put the result in the values file. If the screen's own inputs are what's under test, read them from the hierarchy first (`text_audit.py --values` with `pattern` entries prints their `actual`), compute, then run the exact check. Never accept a total because it "looks plausible".
 
 ### No device? OCR, with its authority stated
 
@@ -116,7 +156,7 @@ It finds elements by **what they say**, not by what they look like, and that one
 Two consequences worth planning around:
 
 - **It is fast, and that is the point.** One run on a real screen takes under a second and needs no follow-up. The band scripts are equally quick to *execute* — the cost was never CPU, it was the human loop of run → read JSON → open a 2 MB composite → adjust a parameter → repeat, which is where a single-screen review used to spend half an hour.
-- **Every number names its element.** `gap "Search for plants" -> "Popular Plants": 40 → 61.4 design px (1.53x)` can be checked by reading it. `gap B2-B3` could only be checked by opening a picture.
+- **Every number names its element.** `gap "Search for plants" -> "Popular Plants": 40 → 61.4 dp (1.53x)` can be checked by reading it. `gap B2-B3` could only be checked by opening a picture.
 
 **What it does not see: anything without text.** An icon row, an image card, a divider, a spacer, a floating action button, a debug overlay — no string, no anchor, not measured. OCR also reads light text on a coloured fill poorly, so a white label on a primary button may not anchor at all. On a real content screen that is a large fraction of the pixels, so treat a clean `layout_audit` run as covering the copy and its spacing, not the screen.
 
@@ -148,12 +188,12 @@ Both print JSON to stdout and write an annotated PNG. **Read the JSON before the
 
 | Property | Default band | Reasoning |
 |---|---|---|
-| Gap between elements | **±18% *and* ±4 design px** — both must be exceeded | A 2 px slip on a 12 px gap is 17% and still just rounding; a 20% slip on a 90 px gap is 18 px and obvious. Neither threshold alone separates those, so a gap is flagged only when it fails both |
-| Element height | Same dual rule, ±18% and ±4 px | A flagged *height* means the element is the wrong size; a flagged *gap* means the space around it is. Different fixes, so they are measured and reported separately |
-| Side margin | ±4 design px | Absolute only: side padding is a fixed value in every layout system, so a percentage of it means nothing |
+| Gap between elements | **±8 dp** (`--tolerance-dp`, or `--gap-tolerance-dp`) | One number in the unit the design file uses. Spacing tokens step by 4–8 dp, so 8 dp is the smallest difference that is a different token rather than rendering and measurement noise. A percentage gate is available (`--gap-tolerance-pct`) but off by default: it made a 12 dp slip on a 90 dp gap unfailable |
+| Element height | **±8 dp** (`--height-tolerance-dp`) | A flagged *height* means the element is the wrong size; a flagged *gap* means the space around it is. Different fixes, so they are measured and reported separately |
+| Side margin | **±8 dp** (`--margin-tolerance-dp`) | Side padding is a fixed dp value in every layout system |
 | Font size | ±8% | Type scales step in discrete sizes — 16→18 is +12.5% — so 8% separates adjacent steps while staying above the measurement floor |
 | Font weight | ±14% | Stroke thickness is a real but noisier signal than height; anti-aliasing and sub-pixel rendering move it a few percent |
-| Systematic ratio | The same band, applied to the median | One number for the whole screen |
+| Systematic spacing | ≥60% of comparable gaps (min 3) out of tolerance **in the same direction** | One wrong spacing token, reported as one finding with the median ratio as evidence |
 
 Every one of these is a default the script prints back in its own `tolerances` block. When a report quotes a threshold, quote it from that block rather than from this table — a number copied out of prose is the first thing to go stale.
 
@@ -248,19 +288,19 @@ Lead with the number, name the location, say which instrument proved it.
 
 [Critical] All section gaps render ~29% larger than the design (spacing_audit
   systematic_gap_ratio 1.29 over 5 comparable gaps): search→"Popular Plants" 28→36,
-  card row→"Your Garden" 24→32 design px. Likely one root cause — a single
+  card row→"Your Garden" 24→32 dp. Likely one root cause — a single
   vertical-spacing token. Evidence: report/grid/TC-010-spacing.png
 
 [Critical] B2–C2: screen title renders at 0.67x the design's size and at body weight
-  (typography_audit band 0: x-height 14.5→10.1 design px; stroke ratio 0.66,
+  (typography_audit band 0: x-height 14.5→10.1 dp; stroke ratio 0.66,
   confidence high). Relative to body text it is 1.25x where the design uses 1.88x —
   the heading style is not being applied. Evidence: report/grid/TC-010-type.png
 
-[Minor]    Search field renders 4 design px shorter than the design (48→44) —
+[Minor]    Search field renders 9 dp shorter than the design (48→39) —
   measured, inside the noticeable range but not a usability issue.
 
 [Review]   Primary button blue reads slightly darker than the design. Not measured —
   nothing here measures colour. Estimate, for a human to judge.
 ```
 
-Always include: severity, the location (cell address, or the band/gap id), the measurement, and the evidence path. A developer can act on "gap 24→32 design px (+33%)" in one read; "spacing looks off" sends them back to measure it themselves.
+Always include: severity, the location (cell address, or the band/gap id), the measurement, and the evidence path. A developer can act on "gap 24→32 dp (+33%)" in one read; "spacing looks off" sends them back to measure it themselves.

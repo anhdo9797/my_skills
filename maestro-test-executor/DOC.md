@@ -192,7 +192,7 @@ flowchart TD
     G --> SCAN["🔍 Scan cell by cell\n(heuristic checklist)"]
 
     MODE -- "Yes (design mode)" --> PV["pair_view.py design.png actual.png\n--crop-actual-top/--bottom (strips chrome\nso cell addresses ACTUALLY align)\n→ diffs pixels → flags cells over threshold\n→ ONE side-by-side composite\n= CONTENT / PRESENCE / STYLE"]
-    MODE -- "Yes (design mode)" --> SA["spacing_audit.py design.png actual.png\nscales by WIDTH ONLY (vertical error survives)\n→ segments both into element bands\n→ MEASURES every gap / height / margin in design px-dp\n= GEOMETRY"]
+    MODE -- "Yes (design mode)" --> SA["spacing_audit.py design.png actual.png\neach side → dp by its own density, ±8 dp\n→ segments both into element bands\n→ MEASURES every gap / height / margin in dp\n= GEOMETRY"]
     MODE -- "Yes (design mode)" --> TY["typography_audit.py design.png actual.png\nmeasures x-height + stroke÷x-height per band\n→ ratio vs DESIGN and vs the screen's OWN body text\n→ widens tolerance to the precision inputs support\n= FONT SIZE / FONT WEIGHT"]
     D(["report/figma/TC-XXX_state.png"]) -.-> PV
     D -.-> SA
@@ -243,7 +243,7 @@ flowchart TD
 
 > **Five rules keep Tier 3 trustworthy.**
 > 1. *Cell addresses must actually align.* A chrome-less design export gridded independently from a real device screenshot puts the same cell id over different content in each, so design mode always crops the screenshot's chrome first (`pair_view.py`) before comparing.
-> 2. *Measure the geometry; never read spacing off the pixel diff.* `pair_view.py` resizes the design onto the screenshot's width **and** height to align cells — which rescales the design's vertical rhythm onto the device's, so uniformly inflated padding diffs clean, and when the aspect ratios differ it suppresses its own flags entirely. A screen with every gap 30% too big passes both stages. `spacing_audit.py` scales by width only and measures gaps/heights/margins in design px-dp; a `systematic_gap_ratio` outside tolerance is **one** Critical finding with one root cause, not fifteen.
+> 2. *Measure the geometry; never read spacing off the pixel diff.* `pair_view.py` resizes the design onto the screenshot's width **and** height to align cells — which rescales the design's vertical rhythm onto the device's, so uniformly inflated padding diffs clean, and when the aspect ratios differ it suppresses its own flags entirely. A screen with every gap 30% too big passes both stages. `spacing_audit.py` scales by width only and measures gaps/heights/margins in dp; a `systematic_gap_ratio` outside tolerance is **one** Critical finding with one root cause, not fifteen.
 > 3. *Vision estimates; a script measures; the hierarchy reads.* Three instruments, three jobs. Text comes from the **view hierarchy** and is compared exactly — never transcribed from pixels, where OCR quietly mangles the diacritics that matter most. Spacing, font size, and font weight come from the **audit scripts** as ratios — never estimated by eye, and never softened once measured. What's left for **vision** is what nothing measures: clipping, overlap, wrong state, whether text is actually readable, a colour impression. Quote a number only when a script produced it; label everything else "estimate" and mark it 🔍 REVIEW.
 > 4. *Relative for geometry and type; exact for text.* A screenshot contains no `dp` and no `sp` — every absolute pixel value is an artefact of which device and which export you happened to have. So spacing, size, and weight are compared as **ratios** (against the design, and against the screen's own body text), inside a tolerance band. Text has no tolerance at all: one wrong character is a Critical defect. Export the design near the device's scale — at 1x-vs-3x the audits must widen their tolerance and a one-step font-size bug hides under it.
 > 5. *Data state is not design state.* The app showing 3 items where the design shows 6 is the user's data, not a defect — in the spacing table these surface as `unmatched_*` bands and `comparable: false` gaps, and they stay out of the spacing verdict.
@@ -264,13 +264,15 @@ flowchart TD
 
     MID --> CLS{Classify element}
     CLS -- "Static / Structural\n(label, button text, icon,\nlayout, color, heading)" --> ST["→ Tier 1: assertVisible\n→ Tier 2: comparison region"]
-    CLS -- "Dynamic / Data-driven\n(API images, list rows,\navatar, count, price, date)" --> DY["→ Do not assert content\n→ Tier 2: add mask\n--mask x1,y1,x2,y2"]
+    CLS -- "Controlled value\n(qty typed, seeded price,\ncomputed total, badge after N adds)" --> CV["→ Tier 1: copyTextFrom + assertTrue\n(exact, bound to its field)\n→ Tier 3: text_audit --values"]
+    CLS -- "Uncontrolled / live data\n(API images, feed rows,\nother users' text, server clock)" --> DY["→ Do not assert content\n→ Tier 2: add mask\n--mask x1,y1,x2,y2"]
 
     style TOP fill:#FFE3E3,stroke:#C92A2A
     style MID fill:#EBFBEE,stroke:#0CA678
     style BOT fill:#FFF9DB,stroke:#F59F00
     style ST fill:#D0EBFF,stroke:#1971C2
     style DY fill:#FFE8CC,stroke:#E8590C
+    style CV fill:#F3D9FA,stroke:#9C36B5
 ```
 
 ---
@@ -425,7 +427,7 @@ flowchart TD
 | Run a visual baseline diff (Tier 2) | `scripts/compare_screenshots.py` |
 | Grid a screenshot / mark defect cells red (Tier 3, heuristic + final report image) | `scripts/grid_overlay.py` |
 | Chrome-align + diff a design vs. a screenshot into one composite (Tier 3, design mode) | `scripts/pair_view.py` |
-| **Measure** gaps / element heights / side margins vs. a design, in design px-dp (Tier 3, design mode) | `scripts/spacing_audit.py` |
+| **Measure** gaps / element heights / side margins vs. a design, in dp (Tier 3, design mode) | `scripts/spacing_audit.py` |
 | **Measure** font size + font weight as ratios vs. a design and vs. the screen's own body text (Tier 3, design mode) | `scripts/typography_audit.py` |
 | **Compare on-screen text exactly** against the expected copy, from the view hierarchy (Tier 3, any mode) | `scripts/text_audit.py` |
 
@@ -440,7 +442,8 @@ flowchart TD
 | Hardcoded `sleep: 5000` | `waitForAnimationToEnd` / `extendedWaitUntil` |
 | Read app source code | YAML flows + MCP inspect + docs |
 | Agent in the regression loop | Tier 1 assertions + Tier 2 diff script; Tier 3 on demand only |
-| Flag status bar / API images as bugs | Mask chrome, don't assert dynamic content |
+| Flag status bar / API images as bugs | Mask chrome, don't assert uncontrolled content |
+| Skip prices / totals / counts as "dynamic" | If the flow typed, seeded or can compute it, assert it exactly on its field |
 | FAIL a visual TC because the app shows fewer items than the design | Data state ≠ design state — exclude it and say so |
 | Skip a "kiểm tra giao diện" request for lack of a Figma link | Tier 3 heuristic mode — the screenshot alone catches clipping / overlap |
 | Read a raw screenshot for a visual review | Grid it first, scan cell by cell, cite cell addresses |
@@ -448,7 +451,7 @@ flowchart TD
 | Grid design + screenshot independently with the same cols/rows | Cell ids don't align (design has no chrome, screenshot does) — `pair_view.py` crops chrome first, then grids + diffs both |
 | Judge design-vs-actual as two separately-read images | Diffuse comparison misses real diffs — read `pair_view.py`'s one composite, account for every flagged cell |
 | Conclude "spacing matches" from a clean `pair_view.py` diff | It never looked — aligning cells needs a resize on both axes, which normalizes inflated padding away, and its flags self-suppress when the aspect ratios differ. Run `spacing_audit.py` |
-| Report a spacing deviation as "looks tight/loose" for a human to judge | Unactionable, and it files a real single-token layout bug as polish. Quote the measurement ("gap 24→32 design px, +33%") and treat out-of-tolerance as Critical |
+| Report a spacing deviation as "looks tight/loose" for a human to judge | Unactionable, and it files a real single-token layout bug as polish. Quote the measurement ("gap 24→32 dp, +33%") and treat out-of-tolerance as Critical |
 | Wash cells red on a hunch | Highlight only visible evidence; estimates stay text notes |
 | Claim a `dp` / `sp` value no script measured | Vision estimates, never measures — quote the audit's number or label it "estimate" → 🔍 REVIEW |
 | Read text content off the screenshot | That's OCR — it mangles diacritics. `text_audit.py` against the view hierarchy, compared character for character |

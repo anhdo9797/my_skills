@@ -54,9 +54,15 @@ USAGE
   adb exec-out uiautomator dump /dev/tty > /tmp/screen.xml
   python3 text_audit.py --expected expected.txt --actual /tmp/screen.xml
 
-  # let dynamic content through (prices, counts, timestamps, user names)
+  # values bound to an element: prices, totals, counts, dates
+  python3 text_audit.py --expected expected.json --values values.json \\
+      --actual /tmp/screen.json
+
+  # silence UNCONTROLLED extras only (another user's handle, a server clock).
+  # --ignore never touches --expected or --values; a price or count the test
+  # can predict belongs in --values, not here.
   python3 text_audit.py --expected expected.json --actual /tmp/screen.json \\
-      --ignore '^\\d+' --ignore 'đ$' --ignore '^@'
+      --ignore '^@'
 
 `--expected` accepts a JSON array of strings (or of objects with a "text" key —
 the shape Figma text nodes come in), or a plain-text file with one string per
@@ -70,6 +76,15 @@ Word-level differences stay hard failures; character-level ones (accents,
 casing, punctuation, whitespace, truncation) are held as undecidable, because
 those are precisely OCR's own error modes and reporting one as a defect spends a
 developer's afternoon disproving the instrument.
+
+VALUES — the check a presence list cannot make
+----------------------------------------------
+"Is '150.000đ' on screen?" passes when the subtotal and the total are swapped,
+when every row shows the first row's price, when the cart badge still shows the
+previous count. `--values` binds each expected value to ONE element — by id, or
+by the label it sits beside — and compares that element exactly. A number that
+differs is named `value` (calculation / binding bug); the same digits written
+differently is `number_format` (locale / formatting bug). See load_values().
 
 Exit code 0 when every expected string matched exactly, 1 otherwise, so the
 check can gate a run. Dependencies: none for the hierarchy path; Pillow and
@@ -199,6 +214,44 @@ def _is_wrap(expected, actual, prev_expected="", next_expected="",
     return False
 
 
+def _digits(text):
+    return re.sub(r"\D", "", text)
+
+
+def _letters(text):
+    return _strip_diacritics(re.sub(r"[\W\d_]", "", text)).casefold()
+
+
+def _numeric_ish(text):
+    """A price, count or total rather than a sentence that happens to hold a digit:
+    '150.000đ', '1,299 USD', 'x2', '12/03/2026'."""
+    return bool(_digits(text)) and len(re.sub(r"[\W\d_]", "", text)) <= 4
+
+
+def _refine_number(kind, expected, actual):
+    """Rename a ladder verdict when the difference is really in a number.
+
+    The ladder was built for copy, and it misfiles numbers in both directions:
+    '150.000đ' -> '120.000đ' comes out as a vague 'wording' change, and
+    '150.000đ' -> '150,000đ' as harmless 'punctuation'. The first is a wrong
+    value — a calculation or binding bug — and the second is a locale/format
+    bug. Both are defects, and naming them points the developer at the right
+    layer instead of at the copy deck.
+    """
+    want, got = _digits(expected), _digits(actual)
+    if not want and not got:
+        return kind
+    if want != got:
+        if kind == "wording" and (_letters(expected) == _letters(actual)
+                                  or (_numeric_ish(expected) and _numeric_ish(actual))):
+            return "value"
+        return kind
+    if kind in ("punctuation", "diacritics", "diacritics+punctuation", "wording") \
+            and _numeric_ish(expected) and _numeric_ish(actual):
+        return "number_format"
+    return kind
+
+
 def classify(expected, actual, context=None):
     """Name the kind of difference between two strings, or None if identical.
 
@@ -217,9 +270,9 @@ def classify(expected, actual, context=None):
                 # means the app is rendering *more* than the design asked for,
                 # which is a copy change, not a clipped label.
                 shorter = len(_collapse_space(actual)) < len(_collapse_space(expected))
-                return "truncated" if shorter else "wording"
-            return name
-    return "wording"
+                return "truncated" if shorter else _refine_number("wording", expected, actual)
+            return _refine_number(name, expected, actual)
+    return _refine_number("wording", expected, actual)
 
 
 def similarity(a, b, lenient=True):
@@ -286,8 +339,10 @@ IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".bmp")
 # guaranteed. So a word-level difference from OCR is evidence, and a
 # character-level one is a question for the hierarchy.
 OCR_DECIDABLE = {"wording"}
+# A digit misread (5/6/8, 1/7) is a few pixels too, so a value difference read
+# off an image is held for the hierarchy — surfaced as REVIEW, never passed.
 OCR_UNDECIDABLE = {"diacritics", "casing", "punctuation", "whitespace",
-                   "truncated", "line_wrap"}
+                   "truncated", "line_wrap", "value", "number_format"}
 
 
 def _looks_like_text(line):
@@ -296,6 +351,11 @@ def _looks_like_text(line):
     if len(stripped) < 3:
         return False
     letters = sum(1 for c in stripped if c.isalpha())
+    digits = sum(1 for c in stripped if c.isdigit())
+    # Prices, totals and counts are mostly digits ('150.000đ' has one letter);
+    # a letters-only filter drops exactly the values a test most needs to check.
+    if digits >= 2 and (letters + digits) / len(stripped) >= 0.5:
+        return True
     return letters >= 2 and letters / len(stripped) >= 0.5
 
 
@@ -560,6 +620,165 @@ def check_order(expected, results, on_screen):
     return out
 
 
+# -------------------------------------------------------------------- values
+
+def load_values(path):
+    """Read value checks: each binds ONE expected value to ONE element.
+
+    A presence check ("is '150.000đ' somewhere on screen?") cannot catch the
+    value bugs that actually ship — a subtotal and a total swapped, a badge
+    showing last screen's count, a price that is right on one row and copied
+    onto every other row. Each of those leaves every expected string present
+    *somewhere*. So a value check names its element, by `id` or by the `label`
+    it sits next to, and compares only that element's text.
+
+    Entry shape (JSON array):
+      {"name": "total", "label": "Tổng cộng", "expected": "150.000đ"}
+      {"name": "badge", "id": "cart_badge", "expected": "2"}
+      {"name": "date",  "label": "Ngày giao", "pattern": "\\d{2}/\\d{2}/\\d{4}"}
+    Optional: "direction": "right" | "below" | "auto" (default auto: right, then
+    below), "index": which match to use when an id or label repeats (default 0).
+    `expected` is exact equality; `pattern` is a full-match regex for a value
+    whose content is genuinely uncontrolled but whose FORMAT is specified.
+    """
+    with open(path, "r", encoding="utf-8") as fh:
+        data = json.load(fh)
+    if isinstance(data, dict):
+        data = data.get("values") or []
+    out = []
+    for n, item in enumerate(data):
+        if not isinstance(item, dict):
+            raise ValueError(f"--values entry {n} is not an object")
+        if not (item.get("id") or item.get("label")):
+            raise ValueError(f"--values entry {n} needs an 'id' or a 'label'")
+        if "expected" not in item and "pattern" not in item:
+            raise ValueError(f"--values entry {n} needs 'expected' or 'pattern'")
+        out.append(item)
+    return out
+
+
+def _center(box):
+    return ((box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0)
+
+
+def _id_matches(rid, want):
+    # Android reports 'com.app:id/total_price'; the plan usually says 'total_price'.
+    return bool(rid) and (rid == want or rid.endswith("/" + want) or rid.endswith(":" + want))
+
+
+def _label_matches(text, label):
+    return _collapse_space(text).rstrip(":：").strip() == _collapse_space(label).rstrip(":：").strip()
+
+
+def _neighbour(on_screen, label_idx, direction):
+    """The element that reads as this label's value, by geometry.
+
+    Right means same row (vertical centres within the label's height) and to
+    the right; below means horizontally overlapping and underneath. Nearest
+    wins. With no bounds (OCR), fall back to the next line in reading order —
+    weaker, and the result says so.
+    """
+    label = on_screen[label_idx]
+    box = label["bounds"]
+    if not box:
+        nxt = label_idx + 1
+        return (nxt, "next_line") if nxt < len(on_screen) else (None, None)
+    lx, ly = _center(box)
+    lh = max(1, box[3] - box[1])
+    best = {}
+    for idx, item in enumerate(on_screen):
+        other = item["bounds"]
+        if idx == label_idx or not other or other == box:
+            continue
+        ox, oy = _center(other)
+        if abs(oy - ly) <= lh * 0.6 and other[0] >= box[2] - lh * 0.5:
+            dist = other[0] - box[2]
+            if "right" not in best or dist < best["right"][0]:
+                best["right"] = (dist, idx)
+        if other[1] >= box[3] - lh * 0.3 and other[0] < box[2] and other[2] > box[0]:
+            dist = other[1] - box[3]
+            if "below" not in best or dist < best["below"][0]:
+                best["below"] = (dist, idx)
+    order = ["right", "below"] if direction == "auto" else [direction]
+    for side in order:
+        if side in best:
+            return best[side][1], side
+    return None, None
+
+
+def resolve_value(spec, on_screen):
+    """Find the element holding this spec's value; returns (text, meta) or (None, reason)."""
+    index = int(spec.get("index", 0))
+    if spec.get("id"):
+        hits = [i for i, item in enumerate(on_screen) if _id_matches(item["id"], spec["id"])]
+        if len(hits) <= index:
+            return None, {"status": "element_not_found",
+                          "note": f"no element with id '{spec['id']}' (index {index})"}
+        item = on_screen[hits[index]]
+        return item["text"], {"via": "id", "element_id": item["id"], "bounds": item["bounds"]}
+
+    label = spec["label"]
+    hits = [i for i, item in enumerate(on_screen) if _label_matches(item["text"], label)]
+    inline = []
+    if not hits:
+        # 'Tổng cộng: 150.000đ' in one node — the value is the remainder.
+        norm_label = _collapse_space(label).rstrip(":：").strip()
+        for i, item in enumerate(on_screen):
+            text = _collapse_space(item["text"])
+            if text.startswith(norm_label) and len(text) > len(norm_label):
+                inline.append((i, text[len(norm_label):].lstrip(" :：").strip()))
+        if len(inline) > index:
+            i, remainder = inline[index]
+            item = on_screen[i]
+            return remainder, {"via": "inline_label", "element_id": item["id"] or None,
+                               "bounds": item["bounds"]}
+        return None, {"status": "label_not_found",
+                      "note": f"no element reads '{label}' — the label itself is "
+                              f"missing or worded differently, check the text audit"}
+    if len(hits) <= index:
+        return None, {"status": "label_not_found",
+                      "note": f"label '{label}' appears {len(hits)} time(s), index {index} requested"}
+    value_idx, side = _neighbour(on_screen, hits[index], spec.get("direction", "auto"))
+    if value_idx is None:
+        return None, {"status": "value_not_found",
+                      "note": f"found label '{label}' but no element beside or below it"}
+    item = on_screen[value_idx]
+    return item["text"], {"via": f"label:{side}", "element_id": item["id"] or None,
+                          "bounds": item["bounds"]}
+
+
+def audit_values(specs, on_screen, degraded):
+    """Compare each bound value exactly; `pattern` specs check format only."""
+    out = []
+    for spec in specs:
+        name = spec.get("name") or spec.get("id") or spec.get("label")
+        actual, meta = resolve_value(spec, on_screen)
+        row = {"name": name, "expected": spec.get("expected"),
+               "pattern": spec.get("pattern"), "actual": actual}
+        if actual is None:
+            row.update(meta)
+            row["decidable"] = True
+            out.append(row)
+            continue
+        row.update(meta)
+        if "expected" in spec:
+            want = str(spec["expected"])
+            kind = classify(want, actual)
+            row["status"] = "exact" if kind is None else "mismatch"
+            row["difference"] = kind
+        else:
+            ok = re.fullmatch(spec["pattern"], actual.strip()) is not None
+            row["status"] = "format_ok" if ok else "format_mismatch"
+            row["difference"] = None if ok else "number_format" if _numeric_ish(actual) else "format"
+        kind = row["difference"]
+        # Geometry from OCR has no bounds, so a label->value pairing by reading
+        # order is itself a guess; any failure there is held for the device.
+        row["decidable"] = (not degraded) or (kind in OCR_DECIDABLE
+                                             and meta.get("via") != "label:next_line")
+        out.append(row)
+    return out
+
+
 # ---------------------------------------------------------------------- main
 
 def main():
@@ -568,9 +787,13 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    p.add_argument("--expected", required=True,
+    p.add_argument("--expected", default=None,
                    help="JSON array of strings/objects, one string per line, or a "
                         "design image (read with OCR — see --ocr-lang)")
+    p.add_argument("--values", default=None, metavar="JSON",
+                   help="value checks bound to an element by id or label — the "
+                        "prices, totals, counts and dates a presence check cannot "
+                        "catch (see load_values). Never affected by --ignore")
     p.add_argument("--actual", required=True,
                    help="view-hierarchy dump (Maestro JSON or uiautomator XML), "
                         "'-' to read stdin, or a screenshot (read with OCR). The "
@@ -595,15 +818,21 @@ def main():
     p.add_argument("--out", default=None, help="write the JSON result here too")
     args = p.parse_args()
 
+    if not args.expected and not args.values:
+        sys.stderr.write("ERROR: pass --expected, --values, or both.\n")
+        return 2
     try:
-        expected, expected_source = load_expected(
-            args.expected, args.ocr_lang, args.ocr_psm)
+        expected, expected_source = ([], "none")
+        if args.expected:
+            expected, expected_source = load_expected(
+                args.expected, args.ocr_lang, args.ocr_psm)
+        value_specs = load_values(args.values) if args.values else []
         on_screen, screen_size = load_actual(
             args.actual, args.include_accessibility, args.ocr_lang, args.ocr_psm)
-    except ValueError as exc:
+    except (ValueError, json.JSONDecodeError, OSError) as exc:
         sys.stderr.write(f"ERROR: {exc}\n")
         return 2
-    if not expected:
+    if args.expected and not expected:
         sys.stderr.write("ERROR: the expected list is empty — nothing to verify.\n")
         return 2
 
@@ -614,6 +843,11 @@ def main():
     results, extra, ignored = match(expected, on_screen, patterns)
     defects = find_defects(on_screen, screen_size, degraded)
     order_issues = check_order(expected, results, on_screen) if args.check_order else []
+    values = audit_values(value_specs, on_screen, degraded)
+    bad_values = [v for v in values
+                  if v["status"] not in ("exact", "format_ok") and v["decidable"]]
+    held_values = [v for v in values
+                   if v["status"] not in ("exact", "format_ok") and not v["decidable"]]
 
     mismatches, missing = [], []
     for idx, result in enumerate(results):
@@ -653,17 +887,20 @@ def main():
     # most needs to catch.
     hard_defects = [d for d in defects if d.get("decidable", True)]
     soft_defects = [d for d in defects if not d.get("decidable", True)]
-    failed = bool(decided or missing or hard_defects or order_issues
+    failed = bool(decided or missing or hard_defects or order_issues or bad_values
                   or (args.strict_extra and extra))
+    n_held = len(undecided) + len(soft_defects) + len(held_values)
+    values_ok = sum(1 for v in values if v["status"] in ("exact", "format_ok"))
 
-    if not failed and not undecided and not soft_defects:
-        verdict = (f"PASS — all {exact} expected strings render exactly, "
-                   f"character for character.")
+    if not failed and not n_held:
+        verdict = (f"PASS — all {exact} expected strings and {values_ok} bound "
+                   f"values render exactly, character for character.")
     elif not failed:
         held = sorted({m["difference"] for m in undecided}
-                      | {d["type"] for d in soft_defects})
-        verdict = (f"REVIEW — {exact} strings match; "
-                   f"{len(undecided) + len(soft_defects)} observation(s) OCR cannot "
+                      | {d["type"] for d in soft_defects}
+                      | {v.get("difference") or v["status"] for v in held_values})
+        verdict = (f"REVIEW — {exact} strings and {values_ok} values match; "
+                   f"{n_held} observation(s) OCR cannot "
                    f"decide ({', '.join(held)}). Capture the view hierarchy to "
                    f"settle them.")
     else:
@@ -677,12 +914,15 @@ def main():
             parts.append(f"{len(hard_defects)} content defect(s)")
         if order_issues:
             parts.append(f"{len(order_issues)} out of order")
+        if bad_values:
+            names = ", ".join(f"{v['name']}={v['actual']!r}" for v in bad_values[:5])
+            parts.append(f"{len(bad_values)} wrong value(s) ({names})")
         if args.strict_extra and extra:
             parts.append(f"{len(extra)} unexpected")
         verdict = (f"FAIL — {'; '.join(parts)}. Text content has no tolerance: "
                    f"every one of these is a defect, not a judgement call.")
-        if undecided or soft_defects:
-            verdict += (f" A further {len(undecided) + len(soft_defects)} "
+        if n_held:
+            verdict += (f" A further {n_held} "
                         f"observation(s) need the view hierarchy — see "
                         f"mismatched[].decidable and defects[].decidable.")
 
@@ -694,6 +934,7 @@ def main():
         "missing": missing,
         "defects": defects,
         "out_of_order": order_issues,
+        "values": values,
         "extra_on_screen": extra,
         "ignored_as_dynamic": ignored,
         "screen_size": list(screen_size),

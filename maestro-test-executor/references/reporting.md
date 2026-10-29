@@ -207,14 +207,14 @@ When a TC has many steps or failed mid-way, expand it into one row per step so t
 
 ### Tier 3 findings (one line per finding, per TC)
 
-*Lead with the number wherever a script produced one, and with the location always — "title is clipped" is vague, "title clipped in C3–D3" points straight at it; "spacing looks off" is unactionable, "gap 24→32 design px (+33%)" is a fix. Mark estimates as estimates: vision judges layout, it never measures a value.*
+*Lead with the number wherever a script produced one, and with the location always — "title is clipped" is vague, "title clipped in C3–D3" points straight at it; "spacing looks off" is unactionable, "gap 24→32 dp (+33%)" is a fix. Mark estimates as estimates: vision judges layout, it never measures a value.*
 
 ```
 TC-010 — Edit Form  (device: Pixel 7 emulator, Android 14 · design: Figma node 123:456)
   [Critical] C3–D3: recipe title clipped at the right edge of the card; last
              characters cut by the card boundary. → report/vision/TC-010_default-report.png
   [Critical] Screen title renders at 0.67× the design's size and at body weight
-             (typography_audit band 0: x-height 14.5→10.1 design px, stroke ratio
+             (typography_audit band 0: x-height 14.5→10.1 dp, stroke ratio
              0.66, confidence high). Relative to body text it is 1.25× where the
              design uses 1.88× — the heading style is not applied.
              → report/grid/TC-010_default-type.png
@@ -222,7 +222,7 @@ TC-010 — Edit Form  (device: Pixel 7 emulator, Android 14 · design: Figma nod
              "Đăng nhập", hierarchy reports "Dang nhap" (id login_title). Text is
              exact-match, so this is Critical regardless of size.
              → report/text/TC-010_default.json
-  [Minor]    A11–F11: bottom nav sits 6 design px tighter than the design (18→12,
+  [Minor]    A11–F11: bottom nav sits 6 dp tighter than the design (18→12,
              −33% on one gap only; the rest of the screen is within tolerance).
   Excluded as data-driven: only 3 recipe cards shown vs. 6 in the design (user's data).
 ```

@@ -90,6 +90,12 @@ except ImportError:
     sys.exit(2)
 
 from filter_hierarchy import parse as parse_hierarchy  # noqa: E402
+from units import (  # noqa: E402
+    DEFAULT_TOLERANCE_DP,
+    out_of_tolerance,
+    resolve_actual_width_dp,
+    resolve_design_width_dp,
+)
 from text_audit import (  # noqa: E402
     OCR_DECIDABLE,
     _collapse_space,
@@ -222,7 +228,7 @@ def load_elements(path, lang, psm):
 
 def _span(elements):
     if not elements:
-        return 1.0
+        return 1.0, 0.0
     top = min(e["box"][1] for e in elements)
     bottom = max(e["box"][3] for e in elements)
     return max(1.0, bottom - top), top
@@ -359,13 +365,12 @@ def ink_extent(image, box, tolerance=28):
 
 
 def flag(design_value, actual_value, tol_pct, tol_abs):
-    """Both thresholds must be exceeded — see ui-metrics.md for why."""
+    """Values are in dp; flagged when |delta| > tol_abs (and tol_pct, if set)."""
     if design_value is None or actual_value is None:
         return None, None, False
     delta = actual_value - design_value
     ratio = actual_value / design_value if design_value else None
-    over = abs(delta) > tol_abs and (
-        not design_value or abs(delta) / design_value > tol_pct)
+    over = out_of_tolerance(design_value, actual_value, tol_abs, tol_pct)
     return round(delta, 1), (round(ratio, 3) if ratio else None), bool(over)
 
 
@@ -386,17 +391,33 @@ def main():
     p.add_argument("--design-image", default=None,
                    help="design image for typography when --design is not one")
     p.add_argument("--design-width-dp", type=float, default=None,
-                   help="logical width of the design frame (e.g. 390) so results "
-                        "read in real dp")
+                   help="logical width of the design frame (e.g. 390). Inferred "
+                        "from the export width when omitted; see design_width_dp")
     p.add_argument("--ocr-lang", default="eng")
     p.add_argument("--ocr-psm", type=int, default=4)
-    p.add_argument("--gap-tolerance-pct", type=float, default=0.18)
-    p.add_argument("--gap-tolerance-px", type=float, default=4.0)
+    p.add_argument("--actual-width-dp", type=float, default=None,
+                   help="device screen width in dp (e.g. 411). Inferred when "
+                        "omitted; on Android read it: wm size * 160 / wm density")
+    p.add_argument("--scale-mode", choices=("density", "width"), default="density",
+                   help="density (default): each side -> dp by its own density. "
+                        "width: stretch the build to the design's width")
+    p.add_argument("--tolerance-dp", type=float, default=DEFAULT_TOLERANCE_DP,
+                   help="allowed deviation for gaps, heights and margins in dp "
+                        f"(default {DEFAULT_TOLERANCE_DP:g})")
+    p.add_argument("--gap-tolerance-pct", type=float, default=0.0,
+                   help="optional relative gate; default 0 = off")
+    p.add_argument("--gap-tolerance-px", "--gap-tolerance-dp", dest="gap_tolerance_dp",
+                   type=float, default=None, help="override --tolerance-dp for gaps/heights")
     p.add_argument("--size-tolerance", type=float, default=0.08)
     p.add_argument("--weight-tolerance", type=float, default=0.14)
-    p.add_argument("--margin-tolerance-px", type=float, default=4.0)
+    p.add_argument("--margin-tolerance-px", "--margin-tolerance-dp",
+                   dest="margin_tolerance_dp", type=float, default=None,
+                   help="override --tolerance-dp for side margins")
     p.add_argument("--out", default=None, help="write the JSON here as well")
     args = p.parse_args()
+    gap_tol = args.gap_tolerance_dp if args.gap_tolerance_dp is not None else args.tolerance_dp
+    margin_tol = (args.margin_tolerance_dp if args.margin_tolerance_dp is not None
+                  else args.tolerance_dp)
 
     try:
         design, dw, design_src = load_elements(args.design, args.ocr_lang, args.ocr_psm)
@@ -409,9 +430,18 @@ def main():
     # width is used to normalize: mobile layouts pin horizontal metrics and let
     # content flow vertically, so width is the honest shared unit and vertical
     # error stays in the data instead of being scaled out of it.
-    unit = args.design_width_dp / dw if args.design_width_dp else 1.0
+    design_width_dp, width_source = resolve_design_width_dp(dw, args.design_width_dp)
+    unit = design_width_dp / dw
     sd = unit
-    sa = (dw / float(aw)) * unit
+    if args.scale_mode == "width":
+        actual_width_dp, actual_width_source = design_width_dp, "width mode (stretched)"
+    else:
+        actual_width_dp, actual_width_source = resolve_actual_width_dp(
+            aw, args.actual_width_dp)
+    # Spacing on native/Flutter is fixed in dp, so each side is converted by its
+    # own density; stretching a 360 dp phone onto a 390 dp frame would inflate
+    # every gap by 8% and fail correct screens.
+    sa = actual_width_dp / float(aw)
 
     # Box semantics must match on both sides before any gap is comparable, and
     # neither source hands them over already matching. A hierarchy box is the
@@ -462,11 +492,10 @@ def main():
         dl, dt, dr, db = d["dp"]
         al, at, ar, ab = a["dp"]
         h_delta, h_ratio, h_over = flag(db - dt, ab - at,
-                                        args.gap_tolerance_pct, args.gap_tolerance_px)
+                                        args.gap_tolerance_pct, gap_tol)
         left_delta = round(al - dl, 1)
-        right_delta = round((dw * unit - ar) - (dw * unit - dr), 1)
-        margin_over = (abs(left_delta) > args.margin_tolerance_px
-                       or abs(right_delta) > args.margin_tolerance_px)
+        right_delta = round((actual_width_dp - ar) - (design_width_dp - dr), 1)
+        margin_over = (abs(left_delta) > margin_tol or abs(right_delta) > margin_tol)
         # An anchor that matched only fuzzily is a copy difference wearing a
         # geometry finding's clothes. Geometry is this script's job and exact
         # text is text_audit's, but staying silent here would let a missing word
@@ -497,7 +526,7 @@ def main():
         ga = bottom["actual_box"][1] - top["actual_box"][3]
         if gd < 0 or ga < 0:
             continue  # elements overlap or share a line; not a vertical gap
-        delta, ratio, over = flag(gd, ga, args.gap_tolerance_pct, args.gap_tolerance_px)
+        delta, ratio, over = flag(gd, ga, args.gap_tolerance_pct, gap_tol)
         gaps.append({
             "between": f"{top['text'][:28]} -> {bottom['text'][:28]}",
             "design": round(gd, 1), "actual": round(ga, 1),
@@ -709,12 +738,18 @@ def main():
         "verdict": verdict,
         "authority": exact,
         "evidence_grade": grade,
-        "unit": "dp" if args.design_width_dp else "design px",
+        "unit": "dp",
+        "design_width_dp": design_width_dp,
+        "design_width_source": width_source,
+        "actual_width_dp": actual_width_dp,
+        "actual_width_source": actual_width_source,
+        "scale_mode": args.scale_mode,
         "anchors_matched": len(pairs),
         "resolution_ratio": round(resolution_ratio, 2),
         "systematic_size_ratio": systematic_size,
-        "tolerances": {"gap_pct": args.gap_tolerance_pct,
-                       "gap_px": args.gap_tolerance_px,
+        "tolerances": {"gap_dp": gap_tol, "height_dp": gap_tol,
+                       "margin_dp": margin_tol,
+                       "gap_pct": args.gap_tolerance_pct or None,
                        "size": round(size_tol, 4), "weight": round(weight_tol, 4)},
         "advisory_anchors": len(advisory),
         "sources": {"design": design_src, "actual": actual_src},

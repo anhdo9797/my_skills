@@ -47,7 +47,8 @@ Before comparing, sort each difference:
 | Number of items shown | Overlap, clipping, truncation of a label that fits in the design |
 | One column vs. two *because there are fewer items* | An element in the wrong place or wrong order |
 | Specific names, text, photos, avatars | A **static** element present in the design but missing on device (a header illustration, a control) |
-| Counts, badges, prices, dates | Broken spacing or alignment; wrong color/typography treatment |
+| Counts, badges, prices, dates **differing from the mockup's sample values** | Broken spacing or alignment; wrong color/typography treatment |
+| | A count, price, total or date that disagrees with **what the test did or seeded** (added 2 items → badge says 1; 2 × 75.000 + 15.000 ≠ the total shown) |
 | A section empty because the user has no data there | Content running off-screen; unreadable contrast |
 
 Two ways to keep the comparison fair, best first:
@@ -55,7 +56,7 @@ Two ways to keep the comparison fair, best first:
 1. **Match the data state** — have the flow seed the app into the state the design depicts, so remaining differences are real. Note the seeded state in the TC.
 2. **Compare state-agnostic properties only** — when you can't match it, explicitly ignore count/content/columns-from-count and judge only the data-independent properties. Say so in the report: *"compared layout and style only; item count differs due to user data, excluded."*
 
-When you genuinely can't tell whether a difference is data or design, **treat it as data (don't FAIL)** and note it for review. The design may also simply be an older iteration than the shipped screen.
+When you genuinely can't tell whether a difference is data or design, **treat it as data (don't FAIL)** and note it for review. This rule is about the *mockup's* sample data only. A value the test itself controls — typed, seeded, or computable from other values on screen — is not "data" in this sense: it has an exact expected text, and a mismatch is **Critical** (`ui-metrics.md` → Class A2). The design may also simply be an older iteration than the shipped screen.
 
 **The app being *more* complete than the design usually means a stale baseline, not a bug.** If the app shows a real element the design lacks (a hero image, a new control), the likely cause is that the export or Figma node predates the shipped screen — verdict **PASS**, and recommend refreshing the baseline. The reverse (design has something the app is missing) is the one that usually is a real defect.
 
@@ -95,12 +96,14 @@ Maestro drives to the screen
    → maestro hierarchy > /tmp/screen.json      (the exact strings the app renders)
    → takeScreenshot into report/screenshots/   (clean, no grid)
 
-   → text_audit.py --expected …_expected.json --actual /tmp/screen.json
-        (EXACT string equality; names each difference: diacritics / casing /
-         truncated / wording)                       → report/text/<stem>.json
+   → text_audit.py --expected …_expected.json --values …_values.json
+                   --actual /tmp/screen.json
+        (EXACT string equality; values bound to their element by id/label;
+         names each difference: diacritics / casing / truncated / wording /
+         value / number_format)                     → report/text/<stem>.json
    → spacing_audit.py design.png actual.png …
         (scales by WIDTH only, segments both into element bands, MEASURES every
-         gap / height / margin in design px-dp)     → report/grid/<stem>-spacing.png + JSON
+         gap / height / margin in dp)     → report/grid/<stem>-spacing.png + JSON
    → typography_audit.py design.png actual.png …
         (MEASURES font size and stroke weight per text band, as ratios — both
          against the design and against the screen's own body text)
@@ -148,7 +151,7 @@ Text is the one property with no tolerance, and it is also the cheapest thing to
 python3 scripts/text_audit.py \
     --expected report/figma/TC-010_expected.json \
     --actual /tmp/TC-010_default.json \
-    --ignore '^\d' --ignore 'đ$' \
+    --values report/figma/TC-010_values.json \
     --out report/text/TC-010_default.json
 ```
 
@@ -204,7 +207,7 @@ python3 scripts/spacing_audit.py report/figma/TC-010_default.png report/screensh
     --out report/grid/TC-010_default-spacing.png
 ```
 
-It scales by **width only** — mobile layouts pin horizontal metrics and let content flow vertically, so width is the honest shared unit, and not touching the height is what keeps vertical error in the data. It then segments both images into horizontal content bands separated by empty gaps, aligns the two band sequences (skips allowed, since real data ≠ mockup data), and reports gap by gap. Because gaps are *differences* between positions, the result is immune to a taller/shorter status bar, screen size, and pixel density.
+It converts **each side to dp by its own density** (design export scale; device density read from `adb` or `--actual-width-dp`) and flags anything more than **±8 dp** off — see `ui-metrics.md` → "The shared unit". Heights are never forced to match, which is what keeps vertical error in the data. It then segments both images into horizontal content bands separated by empty gaps, aligns the two band sequences (skips allowed, since real data ≠ mockup data), and reports gap by gap. Because gaps are *differences* between positions, the result is immune to a taller/shorter status bar, screen size, and pixel density.
 
 Read the JSON first:
 
@@ -296,14 +299,14 @@ Then read the **paired composite** (`report/grid/<stem>-pair.png`) — design le
 - Flag anything present in the design but missing on device (and vice versa) **that is not data-driven**.
 - **Exclude data-driven differences** per the table above — don't FAIL on them.
 
-Compare **relative** layout and presence, not pixel-exact positions: device density and system chrome legitimately differ from a design frame. That's what Tier 2 is for, and even there the chrome is masked. The one exception is spacing and margins, which *are* compared numerically — `spacing_audit.py` normalizes by width and compares differences between element positions, so density and chrome drop out of the arithmetic. "Gap renders 32 design px where the design says 24" is a legitimate finding; "the elements look further apart" is not.
+Compare **relative** layout and presence, not pixel-exact positions: device density and system chrome legitimately differ from a design frame. That's what Tier 2 is for, and even there the chrome is masked. The one exception is spacing and margins, which *are* compared numerically — `spacing_audit.py` normalizes by width and compares differences between element positions, so density and chrome drop out of the arithmetic. "Gap renders 32 dp where the design says 24" is a legitimate finding; "the elements look further apart" is not.
 
 ### Step 4 — Classify each finding by severity
 
 | Severity | Definition | Examples |
 |----------|------------|----------|
-| **Critical** | Breaks usability, is unambiguously wrong, or is a *measured* deviation outside tolerance. | **Any text mismatch or text defect at all** — wrong copy, missing diacritics, wrong casing, an untranslated key, a string that arrives truncated (exact-match property: there is no small version of this); a control's text fully clipped or unreadable; two interactive elements overlapping; content running off-screen; a required element missing; a broken image where content was expected; **`systematic_gap_ratio` or `systematic_size_ratio` outside tolerance** (the screen's whole rhythm or type scale is wrong); **one measured gap, margin, font size, or weight far outside tolerance** (e.g. a heading at 0.67× the design's size, or a gap 13 → 42 design px). |
-| **Minor** | Measured but small and localized, or genuinely subjective. | A gap 5–6 design px off in one place; a font size just past tolerance on a single band; slightly off-center; a colour shade a touch off vs. the design; density that reads inconsistent but legible. |
+| **Critical** | Breaks usability, is unambiguously wrong, or is a *measured* deviation outside tolerance. | **Any text mismatch or text defect at all** — wrong copy, missing diacritics, wrong casing, an untranslated key, a string that arrives truncated (exact-match property: there is no small version of this); a control's text fully clipped or unreadable; two interactive elements overlapping; content running off-screen; a required element missing; a broken image where content was expected; **`systematic_gap_ratio` or `systematic_size_ratio` outside tolerance** (the screen's whole rhythm or type scale is wrong); **one measured gap, margin, font size, or weight far outside tolerance** (e.g. a heading at 0.67× the design's size, or a gap 13 → 42 dp). |
+| **Minor** | Measured but small and localized, or genuinely subjective. | A gap just past the 8 dp tolerance (9–10 dp) in one place; a font size just past tolerance on a single band; slightly off-center; a colour shade a touch off vs. the design; density that reads inconsistent but legible. |
 
 If you're unsure whether something is Critical, ask: *would a normal user notice and be blocked or confused?* Yes → Critical. Merely "a designer might tweak it" → Minor. **Bias Minor when genuinely uncertain** — a false Critical erodes trust faster than a missed nitpick.
 
@@ -349,11 +352,11 @@ Write each finding so a reviewer can locate and judge it without re-deriving con
   characters cut by the card boundary. Evidence: report/vision/TC-010_default-report.png
 [Critical] All section gaps render ~29% larger than the design (spacing_audit
   systematic_gap_ratio 1.29 over 5 comparable gaps): search→"Popular Plants"
-  28→36, card row→"Your Garden" 24→32, "Your Garden"→content 13→42 design px.
+  28→36, card row→"Your Garden" 24→32, "Your Garden"→content 13→42 dp.
   Likely one root cause — a single vertical-spacing token.
   Evidence: report/grid/TC-010_default-spacing.png. Figma node 123:456.
 [Critical] B2–C2: screen title renders at 0.67x the design's size and at body
-  weight (typography_audit band 0: x-height 14.5→10.1 design px; stroke ratio
+  weight (typography_audit band 0: x-height 14.5→10.1 dp; stroke ratio
   0.66, confidence high). Relative to body text it is 1.25x where the design
   uses 1.88x — the heading text style is not being applied.
   Evidence: report/grid/TC-010_default-type.png
@@ -361,11 +364,11 @@ Write each finding so a reviewer can locate and judge it without re-deriving con
   "Đăng nhập", the hierarchy reports "Dang nhap" (element id login_title).
   Text content is exact-match, so this is Critical regardless of size.
   Evidence: report/text/TC-010_default.json
-[Minor]    B2: search field renders 4 design px shorter than the design (48→44) —
+[Minor]    B2: search field renders 9 dp shorter than the design (48→39) —
   noticeable but not a usability issue.
 ```
 
-Always include: severity, the location (cell address, or the band/gap id from the spacing audit), what's wrong, and the annotated image path (plus the Figma node id in design mode). The location is what makes a finding actionable — "title is clipped" is vague; "title clipped in C3–D3" points straight at it. **When a number exists, lead with the number:** the measured diff ratio from `pair_view.py` when a cell was flagged ("C3–D3 (18% pixel diff)"), and the measured px/dp from `spacing_audit.py` for anything about spacing, size, or margins. A developer can act on "gap 24→32 design px (+33%)" in one read; "spacing looks off" sends them back to measure it themselves. Reserve prose-only findings for what genuinely wasn't measured, and label those "estimate".
+Always include: severity, the location (cell address, or the band/gap id from the spacing audit), what's wrong, and the annotated image path (plus the Figma node id in design mode). The location is what makes a finding actionable — "title is clipped" is vague; "title clipped in C3–D3" points straight at it. **When a number exists, lead with the number:** the measured diff ratio from `pair_view.py` when a cell was flagged ("C3–D3 (18% pixel diff)"), and the measured px/dp from `spacing_audit.py` for anything about spacing, size, or margins. A developer can act on "gap 24→32 dp (+33%)" in one read; "spacing looks off" sends them back to measure it themselves. Reserve prose-only findings for what genuinely wasn't measured, and label those "estimate".
 
 **Critical findings feed Failed Test Details** (see `reporting.md`). Map them onto the bug fields directly so the next phase files the bug without re-investigating:
 

@@ -99,6 +99,7 @@ except ImportError:
     )
     sys.exit(2)
 
+from units import resolve_actual_width_dp, resolve_design_width_dp  # noqa: E402
 from spacing_audit import (  # noqa: E402  (path set above)
     _load_font,
     align,
@@ -867,6 +868,13 @@ def main():
                    help="floor for the allowed |ratio-1| on stroke weight (default "
                         "0.14). Wider than size because stroke measurement is "
                         "noisier; also widened per band - see weight_tolerance_used")
+    p.add_argument("--actual-width-dp", type=float, default=None,
+                   help="device screen width in dp (e.g. 411). Inferred when "
+                        "omitted; on Android read it: wm size * 160 / wm density")
+    p.add_argument("--scale-mode", choices=("density", "width"), default="density",
+                   help="density (default): each side -> dp by its own density, "
+                        "since sp is fixed across phone widths. width: stretch the "
+                        "build to the design's width")
     p.add_argument("--measure-width", type=int, default=None,
                    help="resample both images to this width before measuring. Off by "
                         "default: resampling either blurs the smaller image or "
@@ -878,8 +886,18 @@ def main():
     # a 1x export. --design-width-dp rescales that unit when the export is 2x/3x,
     # so the numbers in the report match what a developer reads in the design
     # file rather than the export's pixel count.
-    dp_unit = (args.design_width_dp / design_w) if args.design_width_dp else 1.0
-    unit = "dp" if args.design_width_dp else "design px"
+    design_width_dp, width_source = resolve_design_width_dp(design_w, args.design_width_dp)
+    dp_unit = design_width_dp / design_w
+    unit = "dp"
+    actual_px_w = Image.open(args.actual).size[0]
+    if args.scale_mode == "width":
+        actual_width_dp, actual_width_source = design_width_dp, "width mode (stretched)"
+    else:
+        actual_width_dp, actual_width_source = resolve_actual_width_dp(
+            actual_px_w, args.actual_width_dp)
+    # The actual image's full width expressed in design px: via its OWN density,
+    # so a 360 dp phone's 16 sp text is not read as 17.3 against a 390 dp frame.
+    actual_design_w = actual_width_dp / dp_unit
 
     def segment_both(min_gap):
         d = prepare(args.design, args.crop_design_top, args.crop_design_bottom,
@@ -887,7 +905,7 @@ def main():
                     min_gap, args.roi_top, args.roi_bottom,
                     measure_width=args.measure_width)
         a = prepare(args.actual, args.crop_actual_top, args.crop_actual_bottom,
-                    args.mask_actual, design_w, args.ink_tolerance, args.min_band,
+                    args.mask_actual, actual_design_w, args.ink_tolerance, args.min_band,
                     min_gap, args.roi_top, args.roi_bottom,
                     measure_width=args.measure_width)
         return d, a
@@ -1023,6 +1041,11 @@ def main():
         "design_width_px": design_w,
         "actual_width_px": Image.open(args.actual).size[0],
         "px_to_dp": round(dp_unit, 4),
+        "design_width_dp": design_width_dp,
+        "design_width_source": width_source,
+        "actual_width_dp": actual_width_dp,
+        "actual_width_source": actual_width_source,
+        "scale_mode": args.scale_mode,
         "body_x_height": {"design": body_d, "actual": body_a},
         "systematic_size_ratio": sys_size,
         "systematic_weight_ratio": sys_weight,
